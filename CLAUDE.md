@@ -17,7 +17,8 @@ executed by an agent that needs to react to the outside world without doing its
 own cursor bookkeeping. It loads a config of channels plus a state file, blocks
 until events arrive or a timeout elapses, emits the new events on stdout,
 advances the state, and exits. See the [README](README.md) for the shape of it
-and the [issue tracker](docs/issues/README.md) for the design.
+and the [issue tracker](docs/issues/README.md), where the design is being
+written up.
 
 The repo is currently **design-stage**: no implementation yet.
 
@@ -27,7 +28,11 @@ The repo is currently **design-stage**: no implementation yet.
   docs, issues, commit messages, PR descriptions — for a public audience from
   the start. Keep the design generic; `botwatch` is not a Kroeplex tool that
   happens to be shareable, it is a general-purpose tool whose first consumer
-  happens to be Kroeplex.
+  happens to be Kroeplex. The one exception is the **traceability header** an
+  agent puts at the top of a PR description (an operator id and links back to
+  the conversation the work came from) — that is machinery for finding things
+  again, it is exempt from this rule, and it should not be stripped. Everything
+  below it is the part written for a public reader.
 - **Don't put private material in the history.** Kroeplex, Kroebot, and the
   fact that Kroebot dogfoods `botwatch` are all fine to name — they show up in
   the commit history regardless. Individual family members are not, except

@@ -22,9 +22,8 @@ per-source cursors inside the agent's head.
 
 ## Status
 
-**Early design.** The repository currently holds the design discussion; there
-is no implementation yet. Start with the
-[issue tracker](docs/issues/README.md).
+**Early design.** There is no implementation yet. The design is being written
+up in the [issue tracker](docs/issues/README.md) — start there.
 
 ## The shape of it
 
