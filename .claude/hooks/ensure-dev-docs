@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+##
+## SessionStart hook: verify that `.dev-docs` resolves, so the shared Kroeplex
+## agent instructions actually load.
+##
+## It does two things, in this order:
+##
+##   1. Verifies the chain resolves. A broken chain is otherwise SILENT —
+##      `CLAUDE.md`'s `@.dev-docs/...` import resolves to nothing and the session
+##      proceeds without the shared conventions, looking entirely normal. Saying
+##      so on stdout puts it in front of the agent, which is the best this event
+##      offers.
+##
+##      ⚠️ EVERY MESSAGE HERE GOES TO STDOUT, AND EVERY PATH EXITS 0. That pairing
+##      is load-bearing and easy to "fix" into uselessness:
+##        - `SessionStart` is one of only three events where a hook's stdout on
+##          exit 0 is added as context the agent can see and act on.
+##        - On exit 2 the harness DISCARDS stdout and surfaces stderr instead —
+##          and `SessionStart` cannot block at all, so exit-2 stderr goes to the
+##          user's transcript only and the agent never sees it. Message lost.
+##        - So do NOT route these to stderr (the usual BSG 5.1 instinct — this is
+##          5.1's stated exception, a report meant for a reader), and do NOT
+##          return non-zero to signal severity. Both silently drop the message.
+##      This hook cannot block a session. Nothing on this event can. What it can
+##      do is make sure the agent is told, and that is what the exit 0 buys.
+##   2. ONLY when that check fails: tries to create the ONE per-machine link, if
+##      a sibling dev-docs clone is sitting in the standard layout, and re-checks.
+##      That keeps a fresh machine self-healing while leaving a failed repair
+##      structurally unable to suppress the message in (1).
+##
+## It never touches the three per-repo links: those are committed (see
+## boilerplate/README.md), so a worktree carries its own out of the tree like any
+## other file. The per-machine link is the only one that can legitimately be
+## missing, and therefore the only one worth creating here.
+##
+## VENDORED FILE — source of truth in dev-docs:
+##   https://github.com/kroeplex/dev-docs/blob/main/boilerplate/.claude/hooks/ensure-dev-docs
+## Copied verbatim into each Kroeplex repo; edit it upstream, not here.
+##
+
+set -euo pipefail
+
+readonly _GUIDE="docs/agent-guide/README.md"
+
+## Best-effort creation of the ONE per-machine link. Reached only when the chain
+## is ALREADY broken, and never allowed to fail the hook — an advisory repair
+## must not be able to suppress the message that is this hook's whole point.
+## (It cannot block; see the header. Don't "restore" a non-zero return here.)
+_autolink() {
+  local -r root="$1"
+
+  ## The clones sit beside the MAIN checkout, which is NOT `${root}/..` when this
+  ## runs from a worktree — there, `${root}/..` is <repo>/.claude/worktrees/, and
+  ## writing there would plant a machine-local link at a *committed* path. Derive
+  ## the main checkout the way link-dev-docs does; skip entirely if git can't say.
+  local common
+  common=$(git -C "${root}" rev-parse --path-format=absolute --git-common-dir \
+    2> /dev/null) || common=''
+
+  if [[ -n "${common}" ]]; then
+    local -r parent="$(dirname "${common}")/.."
+
+    ## `! -L` as well as `! -e`: `-e` follows the link, so a DANGLING one reads as
+    ## absent and `ln -s` would then fail on the path already there. A dangling
+    ## target is often deliberate anyway (link-dev-docs §3 points it at an absolute
+    ## path when the clone lives elsewhere), so leave it and let the message below
+    ## route to the skill rather than guessing at a replacement.
+    if [[ ! -e "${parent}/.dev-docs" && ! -L "${parent}/.dev-docs" &&
+      -e "${parent}/dev-docs/${_GUIDE}" ]]; then
+      ln -s dev-docs "${parent}/.dev-docs" || true
+    fi
+  fi
+}
+
+_main() {
+  ## Repo root, derived from this script's own location — robust, with no
+  ## dependence on the harness setting/expanding $CLAUDE_PROJECT_DIR:
+  ## <root>/.claude/hooks/ensure-dev-docs, so ../.. from here is <root>.
+  local -r root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  local -r link="${root}/.dev-docs"
+
+  if [[ ! -e "${link}/${_GUIDE}" ]]; then
+    _autolink "${root}"
+
+    ## Say so. This is the only write this hook ever makes, and it lands OUTSIDE
+    ## the repo it ships in — a vendored file doing that should announce it at
+    ## least once. Telling the agent to read the guide also covers the case where
+    ## CLAUDE.md's @import already resolved to nothing for this session.
+    if [[ -e "${link}/${_GUIDE}" ]]; then
+      printf '%s\n' \
+        "SETUP REPAIRED: created the one-time per-machine link beside the repo" \
+        "clones, so ${link}/${_GUIDE} now resolves. If the shared Kroeplex agent" \
+        "instructions are not already in context, read that file before doing" \
+        "anything the user asked for."
+    fi
+  fi
+
+  if [[ ! -e "${link}/${_GUIDE}" ]]; then
+    printf '%s\n' \
+      "SETUP ISSUE — HANDLE THIS BEFORE THE USER'S REQUEST: ${link}/${_GUIDE}" \
+      "does not resolve, so the shared Kroeplex agent instructions are NOT" \
+      "loaded — CLAUDE.md's @import skipped them silently. Tell the user and run" \
+      "the link-dev-docs skill. Three usual causes, none a fault in this repo's" \
+      "own files: (1) the one-time per-machine link beside the repos" \
+      "(e.g. ~/src/kroeplex/.dev-docs -> dev-docs) is missing or dangling — the" \
+      "common one; (2) if you are in a worktree, the MAIN checkout is on a" \
+      "branch predating these links, which breaks every worktree at once; or" \
+      "(3) this worktree is not directly inside <repo>/.claude/worktrees/ —" \
+      "each hop resolves against its own parent directory, so anywhere else" \
+      "fails even with all of its own links correct. Only (2) is out of your" \
+      "hands: that tree belongs to whoever is working in it."
+  fi
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  _main "$@"
+fi

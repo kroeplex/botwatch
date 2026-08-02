@@ -1,0 +1,6 @@
+.DS_Store
+
+# Worktrees live here and are never committed. The .dev-docs link inside is the
+# one exception, force-added once. See
+# https://github.com/kroeplex/dev-docs/blob/main/boilerplate/README.md
+/.claude/worktrees/
