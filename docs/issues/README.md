@@ -5,4 +5,6 @@ Conventions and how to write a good issue: **[the shared issue tracker guide](ht
 
 ## Index
 
-_(no issues yet)_
+| # | Title | Kind | Status |
+|---|---|---|---|
+| [0001](0001.md) | botwatch: a one-shot `select` over many event sources | RFC | Open |
