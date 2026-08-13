@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+##
+## `scripts/ci`: Run the full CI suite locally (mypy, pytest, pylint, isort,
+## black).
+##
+## This is the *local* convenience runner; GitHub CI runs each tool as its own
+## job (see `.github/workflows/ci.yml`).
+##
+
+set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/base.sh"
+
+_init() {
+  base::show_banner 'Initializing workarea ...'
+  poetry install
+}
+
+_mypy() {
+  base::show_banner 'Running mypy ...'
+  poetry run mypy
+}
+
+_pytest() {
+  base::show_banner 'Running pytest ...'
+  poetry run pytest --strict-markers -vv
+}
+
+_pylint() {
+  base::show_banner 'Running pylint ...'
+  poetry run pylint botwatch tests
+}
+
+_isort() {
+  base::show_banner 'Running isort ...'
+  poetry run isort --check --color --diff botwatch tests
+}
+
+_black() {
+  base::show_banner 'Running black ...'
+  poetry run black --check --color --diff .
+}
+
+## Verify the generated issue index matches the issues on disk.
+##
+## `render_issues --check` re-renders and diffs rather than writing, so a
+## hand-edited index fails here instead of being silently reverted by the next
+## run.
+_render_issues() {
+  base::show_banner 'Checking the issue index ...'
+  ./scripts/render_issues --check
+}
+
+_main() {
+  cd "${BASE__ROOT_DIR}"
+
+  if ! (
+    _init
+
+    _mypy
+    _pytest
+    _pylint
+    _isort
+    _black
+    _render_issues
+  ); then
+    base::abort 'CI failed.'
+  fi
+
+  base::show_banner 'Done.'
+}
+
+_main "$@"
