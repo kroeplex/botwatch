@@ -5,7 +5,7 @@ jobs:
 
   check:
     # One job per tool, as separate checks -- but one `steps:` block rather than
-    # five copies of it. Each tool's failure stays independently visible, and
+    # a copy of it per tool. Each tool's failure stays independently visible, and
     # `fail-fast: false` keeps a mypy error from hiding a formatting one.
     name: ${{ matrix.name }}
     runs-on: ubuntu-24.04

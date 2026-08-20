@@ -4,7 +4,8 @@
 ## black).
 ##
 ## This is the *local* convenience runner; GitHub CI runs each tool as its own
-## job (see `.github/workflows/ci.yml`).
+## job (see `.github/workflows/ci.yml`).  Any extra arguments are forwarded to
+## pytest, e.g. `scripts/ci -k version`.
 ##
 
 set -euo pipefail
@@ -22,7 +23,7 @@ _mypy() {
 
 _pytest() {
   base::show_banner 'Running pytest ...'
-  poetry run pytest --strict-markers -vv
+  poetry run pytest --strict-markers -vv "$@"
 }
 
 _pylint() {
@@ -57,7 +58,7 @@ _main() {
     _init
 
     _mypy
-    _pytest
+    _pytest "$@"
     _pylint
     _isort
     _black

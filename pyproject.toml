@@ -16,6 +16,9 @@ mypy = '*'
 pylint = '*'
 pytest = '*'
 pytest-asyncio = '*'
+pytest-mock = '*'
+pytest-randomly = '*'
+pytest-timeout = '*'
 
 [build-system]
 requires = ['poetry-core>=2']
@@ -47,6 +50,9 @@ pretty = true
 # touches one is a coroutine; `asyncio_mode = 'auto'` saves marking each.
 asyncio_default_fixture_loop_scope = 'function'
 asyncio_mode = 'auto'
+# A driver that never wakes is this project's signature failure, and without a
+# per-test ceiling it presents as a CI job that hangs rather than a red test.
+timeout = 5
 filterwarnings = [
     'error::pytest.PytestUnraisableExceptionWarning',
     'error::RuntimeWarning',
