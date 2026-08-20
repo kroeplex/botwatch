@@ -4,3 +4,12 @@
 # one exception, force-added once. See
 # https://github.com/kroeplex/dev-docs/blob/main/boilerplate/README.md
 /.claude/worktrees/
+
+# Python
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+
+# Poetry keeps the virtualenv in-project (see poetry.toml).
+/.venv/

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+##
+## `scripts/fixfmt`: Auto-format the codebase with isort and black.
+##
+## > [!WARNING]
+## > This modifies files in place; commit any unsaved changes first.
+##
+
+set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/base.sh"
+
+_main() {
+  cd "${BASE__ROOT_DIR}"
+
+  base::show_banner 'Applying isort ...'
+  poetry run isort botwatch tests
+
+  base::show_banner 'Applying black ...'
+  poetry run black .
+
+  base::show_banner 'Done.'
+}
+
+_main "$@"

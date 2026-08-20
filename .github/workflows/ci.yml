@@ -1,0 +1,32 @@
+name: CI
+on:
+  push
+jobs:
+
+  check:
+    # One job per tool, as separate checks -- but one `steps:` block rather than
+    # a copy of it per tool. Each tool's failure stays independently visible, and
+    # `fail-fast: false` keeps a mypy error from hiding a formatting one.
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: mypy
+            run: poetry run mypy
+          - name: pytest
+            run: poetry run pytest --strict-markers -vv
+          - name: pylint
+            run: poetry run pylint botwatch tests
+          - name: isort
+            run: poetry run isort --check --color --diff botwatch tests
+          - name: black
+            run: poetry run black --check --color --diff .
+          - name: render_issues
+            run: ./scripts/render_issues --check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/init
+      - name: Run ${{ matrix.name }}
+        run: ${{ matrix.run }}

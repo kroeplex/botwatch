@@ -1,0 +1,32 @@
+[MAIN]
+fail-under=10.0
+
+[MESSAGES CONTROL]
+disable=
+    fixme,  # (comment this line to see all TODOs/FIXMEs)
+    implicit-str-concat,  # (strings may be split across multiple lines)
+    missing-class-docstring,
+    missing-function-docstring,
+    missing-module-docstring,
+    too-many-arguments,
+    too-many-instance-attributes,
+    wrong-import-order,  # (isort's no_sections style sorts all imports together)
+enable=
+    useless-suppression
+
+[REPORTS]
+output-format=colorized
+
+[FORMAT]
+# "Regexp for a line that is allowed to be longer than the limit":
+ignore-long-lines=^\s*(# )?<?https?://\S+>?$
+
+[BASIC]
+# Single-letter names sanctioned by the style guide (loop index, comprehension
+# element/key/value, and the throwaway underscore):
+good-names=i,x,k,v,_
+check-quote-consistency=yes
+
+[DESIGN]
+# "Maximum number of return / yield for function / method body":
+max-returns=1
