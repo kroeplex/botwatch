@@ -7,6 +7,7 @@ requires-python = '>=3.14,<4'
 dependencies = [
     'pydantic (>=2,<3)',
     'pydantic-settings (>=2,<3)',
+    'pyyaml (>=6,<7)',
 ]
 
 [tool.poetry.group.dev.dependencies]
@@ -19,6 +20,7 @@ pytest-asyncio = '*'
 pytest-mock = '*'
 pytest-randomly = '*'
 pytest-timeout = '*'
+types-pyyaml = '*'
 
 [build-system]
 requires = ['poetry-core>=2']
