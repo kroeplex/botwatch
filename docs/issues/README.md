@@ -7,6 +7,7 @@ Conventions and how to write a good issue: **[the shared issue tracker guide](ht
 
 | # | Title | Kind | Status |
 |---|---|---|---|
+| [0014](0014.md) | Notice change, not only arrival: edits and thread growth by re-scanning a window | RFC | Open |
 | [0013](0013.md) | Resync the vendored boilerplate before this repo is published | Bug | Open |
 | [0012](0012.md) | Add the Pub/Sub driver, making `botwatch` push-capable | Feature | Open |
 | [0011](0011.md) | Add the GitHub driver for pull requests, reviews, and check runs | Feature | Open |
