@@ -24,18 +24,32 @@ def _channel(**options: object) -> _config.ChannelConfig:
 
 
 class _FakeApi:
-    """An :class:`_slack._ApiClient` whose polls are a fixed list of batches; the
-    driver stays open past them, so a test pulls exactly as many events as it
+    """An :class:`_slack._ApiClient` whose polls are fixed lists of batches -- one
+    stream of history batches, and a stream of reply batches per thread parent.
+    The driver stays open past them, so a test pulls exactly as many events as it
     laid out."""
 
-    def __init__(self, batches: list[list[dict[str, object]]]) -> None:
+    def __init__(
+        self,
+        batches: list[list[dict[str, object]]],
+        replies: dict[str, list[list[dict[str, object]]]] | None = None,
+    ) -> None:
         self._batches = list(batches)
+        self._replies = {key: list(value) for key, value in (replies or {}).items()}
         self.calls: list[tuple[str, str]] = []
+        self.replies_calls: list[tuple[str, str, str]] = []
         self.closed = False
 
     async def history_since(self, channel: str, oldest: str) -> list[dict[str, object]]:
         self.calls.append((channel, oldest))
         return self._batches.pop(0) if self._batches else []
+
+    async def replies_since(
+        self, channel: str, parent: str, oldest: str
+    ) -> list[dict[str, object]]:
+        self.replies_calls.append((channel, parent, oldest))
+        batches = self._replies.get(parent)
+        return batches.pop(0) if batches else []
 
     async def aclose(self) -> None:
         self.closed = True
@@ -163,7 +177,7 @@ async def test_the_cursor_is_marked_before_the_yield() -> None:
     gen = driver.watch()
     await _take(gen, 1)
     # exactly one event pulled -> state is at that event, never ahead of it
-    assert driver.get_state() == {'cursor': '100.000001'}
+    assert driver.get_state() == {'cursor': '100.000001', 'threads': {}}
     await gen.aclose()
 
 
@@ -197,6 +211,62 @@ async def test_an_unknown_option_is_rejected() -> None:
         await anext(gen)
 
 
+# -- threads ------------------------------------------------------------------
+
+
+async def test_a_thread_with_replies_is_followed_and_its_replies_emitted() -> None:
+    parent: dict[str, object] = {'ts': '100.000001', 'text': 'parent', 'reply_count': 1}
+    reply: dict[str, object] = {'ts': '100.000005', 'thread_ts': '100.000001'}
+    fake = _FakeApi([[parent]], replies={'100.000001': [[reply]]})
+    driver = _slack._Driver(
+        _channel(channel='C1'), cursor='0', api_factory=lambda: fake
+    )
+    gen = driver.watch()
+    events = await _take(gen, 2)
+    await gen.aclose()
+    assert [(e.kind, e.id) for e in events] == [
+        ('message', '100.000001'),
+        ('reply', '100.000005'),
+    ]
+    assert events[1].payload['thread_ts'] == '100.000001'
+    # the thread was discovered and polled from the parent ts, cursor advanced
+    assert fake.replies_calls == [('C1', '100.000001', '100.000001')]
+    assert driver.get_state() == {
+        'cursor': '100.000001',
+        'threads': {'100.000001': '100.000005'},
+    }
+
+
+async def test_a_message_without_replies_is_not_followed() -> None:
+    fake = _FakeApi([[{'ts': '100.000001', 'reply_count': 0}]])
+    driver = _slack._Driver(
+        _channel(channel='C1'), cursor='0', api_factory=lambda: fake
+    )
+    gen = driver.watch()
+    await _take(gen, 1)
+    assert not driver.get_state()['threads']  # nothing followed
+    assert not fake.replies_calls  # so no thread was polled
+    await gen.aclose()
+
+
+async def test_a_followed_thread_resumes_from_its_reply_cursor() -> None:
+    reply: dict[str, object] = {'ts': '200.000009', 'thread_ts': '100.000001'}
+    fake = _FakeApi([[]], replies={'100.000001': [[reply]]})
+    driver = _slack._Driver(
+        _channel(channel='C1'),
+        cursor='150.0',
+        threads={'100.000001': '200.000000'},
+        api_factory=lambda: fake,
+    )
+    gen = driver.watch()
+    (event,) = await _take(gen, 1)
+    await gen.aclose()
+    assert event.kind == 'reply'
+    assert event.id == '200.000009'
+    assert fake.replies_calls == [('C1', '100.000001', '200.000000')]
+    assert driver.get_state()['threads'] == {'100.000001': '200.000009'}
+
+
 # -- the factory and registry -------------------------------------------------
 
 
@@ -208,14 +278,25 @@ def test_build_resumes_a_recorded_cursor() -> None:
         {'cursor': '555.5'},
         _driver.RunContext(now=_NOW),
     )
-    assert driver.get_state() == {'cursor': '555.5'}
+    assert driver.get_state() == {'cursor': '555.5', 'threads': {}}
 
 
 def test_build_starts_a_new_channel_at_the_run_clock() -> None:
     driver = _slack.build(
         'fam', _channel(channel='C1'), None, None, _driver.RunContext(now=_NOW)
     )
-    assert driver.get_state() == {'cursor': _slack._slack_ts(_NOW)}
+    assert driver.get_state() == {'cursor': _slack._slack_ts(_NOW), 'threads': {}}
+
+
+def test_build_resumes_recorded_threads() -> None:
+    driver = _slack.build(
+        'fam',
+        _channel(channel='C1'),
+        None,
+        {'cursor': '555.5', 'threads': {'100.1': '100.9'}},
+        _driver.RunContext(now=_NOW),
+    )
+    assert driver.get_state() == {'cursor': '555.5', 'threads': {'100.1': '100.9'}}
 
 
 def test_the_registry_wires_the_slack_type() -> None:

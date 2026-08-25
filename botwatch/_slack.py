@@ -1,10 +1,21 @@
-"""The Slack channel driver: watch one conversation's new messages.
+"""The Slack channel driver: watch one conversation, top level and threads.
 
-Polls ``conversations.history`` for the messages posted since a stored cursor,
-reports each as a ``message`` event, and advances the cursor so the next run
-resumes where this one stopped. This is the top-level driver -- it reports a
-conversation's own messages; thread replies are the next step, and land in the
-driver's own opaque state alongside this cursor.
+Polls ``conversations.history`` for the messages posted since a stored cursor and
+``conversations.replies`` for each thread it is following, reports each as an
+event, and advances the cursors so the next run resumes where this one stopped.
+A conversation's own messages are ``message`` events; a thread's replies are
+``reply`` events. The driver's whole opaque state is those cursors -- one for the
+top level, one per followed thread -- keyed however the driver likes; the core
+never looks inside.
+
+A thread is discovered when its parent is seen in the top level *already bearing
+replies*. That fits the burst the watcher is built to catch -- it wakes into a
+conversation already in progress, so the parents it reads already carry their
+reply counts. It has one known blind spot: a parent first seen with no replies,
+whose first reply lands only after the top-level cursor has moved past it, is not
+picked up -- no basic Slack call resurfaces such a parent. And the followed-thread
+set only grows (there is no pruning yet). Both are left to a later refinement;
+neither drops an event from a thread already being followed.
 
 Everything that can fail -- resolving the token, validating the channel's
 options, and every network call -- happens inside :meth:`_Driver.watch`, not at
@@ -30,8 +41,8 @@ from typing import Protocol
 _API_ROOT = 'https://slack.com/api'
 
 _PAGE_LIMIT = 200
-"""Messages per ``conversations.history`` page. The pagination cursor is followed
-to the end of the window regardless, so this only trades page count for size."""
+"""Messages per API page. The pagination cursor is followed to the end of the
+window regardless, so this only trades page count for size."""
 
 _MAX_ATTEMPTS = 6
 _BACKOFF_START = 2.0
@@ -90,9 +101,9 @@ def _next_cursor(page: dict[str, object]) -> str:
 
 
 def _combine(pages: list[list[object]]) -> list[dict[str, object]]:
-    """Merge history pages into one ascending, deduped list keyed by ``ts``.
+    """Merge pages into one ascending, deduped list keyed by ``ts``.
 
-    Slack pages history newest-first and walks its cursor backward, so a
+    Slack pages a conversation newest-first and walks its cursor backward, so a
     fetch-order concatenation would be reversed and, at a page seam, could repeat
     a message; keying by ``ts`` dedupes and sorting the keys puts the result in
     chronological order so the driver can advance its cursor monotonically. The
@@ -116,6 +127,10 @@ class _ApiClient(Protocol):
 
     async def history_since(
         self, channel: str, oldest: str
+    ) -> list[dict[str, object]]: ...
+
+    async def replies_since(
+        self, channel: str, parent: str, oldest: str
     ) -> list[dict[str, object]]: ...
 
     async def aclose(self) -> None: ...
@@ -144,21 +159,34 @@ class _Api:
         await self._http.aclose()
 
     async def history_since(self, channel: str, oldest: str) -> list[dict[str, object]]:
-        """Every message strictly after ``oldest``, oldest-first and deduped.
+        """Every top-level message strictly after ``oldest``, oldest-first."""
+        return await self._paginate(
+            'conversations.history', channel=channel, oldest=oldest
+        )
 
-        Follows ``response_metadata.next_cursor`` to the end of the window,
-        collecting each page's ``messages``; :func:`_combine` puts them back into
-        the order and identity a single large page would have.
+    async def replies_since(
+        self, channel: str, parent: str, oldest: str
+    ) -> list[dict[str, object]]:
+        """Every reply in the thread rooted at ``parent`` strictly after
+        ``oldest``, oldest-first, excluding the parent itself.
+
+        ``conversations.replies`` returns the thread's parent at the top of every
+        page regardless of ``oldest``, so it is dropped here -- the caller has
+        already emitted it as a top-level message.
         """
+        replies = await self._paginate(
+            'conversations.replies', channel=channel, ts=parent, oldest=oldest
+        )
+        return [reply for reply in replies if reply.get('ts') != parent]
+
+    async def _paginate(self, method: str, **params: str) -> list[dict[str, object]]:
+        """Follow ``response_metadata.next_cursor`` to the end of the window,
+        then :func:`_combine` the pages into a single read's order and identity."""
         pages: list[list[object]] = []
         cursor = ''
         while True:
             page = await self._call(
-                'conversations.history',
-                channel=channel,
-                oldest=oldest,
-                limit=str(_PAGE_LIMIT),
-                cursor=cursor,
+                method, cursor=cursor, limit=str(_PAGE_LIMIT), **params
             )
             messages = page.get('messages')
             pages.append(messages if isinstance(messages, list) else [])
@@ -222,26 +250,30 @@ class _Options(pydantic.BaseModel):
 
 
 class _Driver:
-    """Watches one Slack conversation's top-level messages.
+    """Watches one Slack conversation: its top level, and the threads it follows.
 
-    Keeps a single ``cursor`` -- the ``ts`` of the last message emitted -- in its
-    opaque state, and each poll asks Slack for everything strictly after it. It
-    never ends on its own: like any live source it stays open until the runtime
-    closes it, and the cursor at that moment is exactly what was emitted.
+    Keeps a top-level ``cursor`` and a ``threads`` map (thread-parent ``ts`` ->
+    that thread's reply cursor) as its opaque state, and each poll asks Slack for
+    everything after each cursor. It never ends on its own: like any live source
+    it stays open until the runtime closes it, and every cursor is marked before
+    its yield (obligation 3) -- so on close the state is exactly what was emitted,
+    never ahead of it.
     """
 
     def __init__(
         self,
         config: _config.ChannelConfig,
         cursor: str,
+        threads: dict[str, str] | None = None,
         api_factory: Callable[[], _ApiClient] | None = None,
     ) -> None:
         self._config = config
         self._cursor = cursor
+        self._threads = dict(threads or {})
         self._api_factory = api_factory
 
     def get_state(self) -> dict[str, object]:
-        return {'cursor': self._cursor}
+        return {'cursor': self._cursor, 'threads': dict(self._threads)}
 
     async def watch(self) -> AsyncGenerator[Event, None]:
         options = self._options()
@@ -252,10 +284,31 @@ class _Driver:
                     ts = message['ts']
                     assert isinstance(ts, str)  # _combine keeps only str-ts messages
                     self._cursor = ts  # obligation 3: mark before the yield
-                    yield self._event(message, ts)
+                    self._follow_thread(message, ts)
+                    yield self._event(message, ts, 'message')
+                for parent in list(self._threads):
+                    replies = await api.replies_since(
+                        options.channel, parent, self._threads[parent]
+                    )
+                    for reply in replies:
+                        rts = reply['ts']
+                        assert isinstance(rts, str)
+                        self._threads[parent] = rts  # obligation 3: before the yield
+                        yield self._event(reply, rts, 'reply')
                 await asyncio.sleep(options.poll_interval.total_seconds())
         finally:
             await api.aclose()
+
+    def _follow_thread(self, message: dict[str, object], parent: str) -> None:
+        """Start following a top-level message's thread if it already has replies.
+
+        A newly followed thread's reply cursor starts at the parent's own ``ts``,
+        so the next poll fetches every reply after it; a thread already followed
+        keeps its advanced cursor.
+        """
+        reply_count = message.get('reply_count')
+        if isinstance(reply_count, int) and reply_count > 0:
+            self._threads.setdefault(parent, parent)
 
     def _options(self) -> _Options:
         try:
@@ -264,11 +317,11 @@ class _Driver:
             raise SlackError(f'invalid slack options: {exc}') from exc
         return options
 
-    def _event(self, message: dict[str, object], ts: str) -> Event:
+    def _event(self, message: dict[str, object], ts: str, kind: str) -> Event:
         return Event(
             channel=self._config.key,
             type=self._config.type,
-            kind='message',
+            kind=kind,
             id=ts,
             ts=_to_datetime(ts),
             meta=dict(self._config.meta),
@@ -277,10 +330,22 @@ class _Driver:
 
 
 def _initial_cursor(prev_state: dict[str, object] | None, now: dt.datetime) -> str:
-    """The cursor to start from: the recorded one, or the run's clock for a
-    channel that has never been positioned."""
+    """The top-level cursor to start from: the recorded one, or the run's clock
+    for a channel that has never been positioned."""
     recorded = prev_state.get('cursor') if prev_state else None
     return recorded if isinstance(recorded, str) else _slack_ts(now)
+
+
+def _initial_threads(prev_state: dict[str, object] | None) -> dict[str, str]:
+    """The per-thread reply cursors to resume, keyed by thread-parent ``ts``;
+    empty for a channel that has never followed a thread."""
+    recorded = prev_state.get('threads') if prev_state else None
+    result: dict[str, str] = {}
+    if isinstance(recorded, dict):
+        for parent, cursor in recorded.items():
+            if isinstance(parent, str) and isinstance(cursor, str):
+                result[parent] = cursor
+    return result
 
 
 def build(
@@ -292,8 +357,12 @@ def build(
 ) -> _driver.ChannelDriver:
     """Construct the Slack driver for a channel (a :data:`_driver.DriverFactory`).
 
-    Resumes from the recorded cursor when there is one. Does no IO and cannot
+    Resumes from the recorded cursors when there are any. Does no IO and cannot
     fail: the token, the options, and the network are all touched inside
     :meth:`_Driver.watch`.
     """
-    return _Driver(config, _initial_cursor(prev_state, context.now))
+    return _Driver(
+        config,
+        _initial_cursor(prev_state, context.now),
+        _initial_threads(prev_state),
+    )
