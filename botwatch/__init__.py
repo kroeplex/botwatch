@@ -11,14 +11,18 @@ from ._config import ConfigError
 from ._config import Defaults
 from ._config import load_config
 from ._event import Event
+from ._state import ChannelState
+from ._state import State
 
 __version__ = '0.1.0'
 
 __all__ = [
     'ChannelConfig',
+    'ChannelState',
     'Config',
     'ConfigError',
     'Defaults',
     'Event',
+    'State',
     'load_config',
 ]

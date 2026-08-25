@@ -104,11 +104,21 @@ class ChannelConfig(pydantic.BaseModel):
     @pydantic.model_validator(mode='before')
     @classmethod
     def _separate_driver_options(cls, data: object) -> object:
-        """Move every key but key/type/meta into ``options``, verbatim."""
+        """Move every key but key/type/meta into ``options``, verbatim.
+
+        Round-trip-safe: an already-separated form (an explicit ``options``
+        block, as produced by dumping a ChannelConfig) is preserved, with any
+        stray top-level driver fields folded in -- so parsing a dumped config
+        back yields the same options rather than an empty dict.
+        """
         if isinstance(data, dict):
-            reserved = {'key', 'type', 'meta', 'options'}
+            reserved = {'key', 'type', 'meta'}
             kept = {k: v for k, v in data.items() if k in reserved}
-            kept['options'] = {k: v for k, v in data.items() if k not in reserved}
+            options = dict(data.get('options') or {})
+            options.update(
+                {k: v for k, v in data.items() if k not in reserved and k != 'options'}
+            )
+            kept['options'] = options
             data = kept
         return data
 
