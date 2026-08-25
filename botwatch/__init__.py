@@ -10,7 +10,10 @@ from ._config import Config
 from ._config import ConfigError
 from ._config import Defaults
 from ._config import load_config
+from ._driver import ChannelDriver
+from ._driver import RunContext
 from ._event import Event
+from ._runtime import run_once
 from ._state import ChannelState
 from ._state import State
 
@@ -18,11 +21,14 @@ __version__ = '0.1.0'
 
 __all__ = [
     'ChannelConfig',
+    'ChannelDriver',
     'ChannelState',
     'Config',
     'ConfigError',
     'Defaults',
     'Event',
+    'RunContext',
     'State',
     'load_config',
+    'run_once',
 ]
