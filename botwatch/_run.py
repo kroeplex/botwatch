@@ -1,4 +1,18 @@
-"""One run: select over the configured sources and write their events."""
+"""One run: select over the configured sources and write their events.
+
+Design spec: **where a run ends never changes what is emitted.** For every
+source whose state has been saved, given the same observations, successive runs
+emit the same sequence of its events once repeats are dropped by ``(source,
+id)``, ``botwatch.*`` events aside, however each run ends, a crash included.
+Only a crash may repeat events, and none skips one.
+
+A new source's state is first saved by a run that ends normally after the
+source has delivered its first update; until then, each run starts it from that
+run's own now. The gap between runs observes nothing, so several changes inside
+it can surface as one, as with a slower poll.
+
+Checked by ``test_run_once__where_a_run_ends_never_changes_what_is_emitted``.
+"""
 
 import contextlib
 import logging
@@ -7,6 +21,7 @@ import uuid
 from . import _config
 from . import _select
 from . import _source
+from . import _state
 from . import slack
 from datetime import datetime
 from datetime import timezone
@@ -59,15 +74,27 @@ def _create_failure(error: BaseException) -> SourceFailed:
 
 async def run_once(
     config: _config.Config,
+    state: _state.StateFile,
     *,
     slack_client: slack.SlackClient,
     out: TextIO,
-) -> None:
-    """Starts every configured source from now, selects over them until the run
-    departs, and writes each event to ``out`` as a JSON line."""
+) -> _state.StateFile:
+    """Starts every configured source from its state in ``state``, or from now,
+    selects over them until the run departs, and writes each event to ``out``
+    as a JSON line.
+
+    Returns the state to save: each configured source's state from its last
+    update. A source that failed keeps the state of its last update before the
+    failure.
+    """
     sources = {
-        source.key: source.watch(slack_client, state=None) for source in config.sources
+        source.key: source.watch(
+            slack_client,
+            state=state.sources.get(source.key),
+        )
+        for source in config.sources
     }
+    latest = {key: state.sources[key] for key in sources if key in state.sources}
     updates = _select.select(
         sources,
         quiet_timeout=config.quiet_timeout,
@@ -77,8 +104,11 @@ async def run_once(
         async for key, task in updates:
             error = _select.get_error(task)
             if error is None:
-                for event in task.result().events:
+                update = task.result()
+                for event in update.events:
                     _write_record(out, Record(source=key, event=event))
+                latest[key] = update.state
             else:
                 _logger.error('source %s failed', key, exc_info=error)
                 _write_record(out, Record(source=key, event=_create_failure(error)))
+    return _state.StateFile(sources=latest)
