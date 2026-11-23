@@ -2,8 +2,8 @@
 
 **Let your AI agent sleep until something actually happens.**
 
-An agent that reacts to the outside world (Slack channels and threads today,
-GitHub pull requests soon) usually polls: it wakes every few minutes, checks
+An agent that reacts to the outside world, such as Slack channels and threads
+or GitHub pull requests, usually polls: it wakes every few minutes, checks
 every source, finds nothing, and goes back to sleep. For an LLM agent each wake
 is a full turn over its whole context. Most of the tokens you pay for go on
 re-reading that context only to confirm nothing happened, and every real event
@@ -41,7 +41,7 @@ it left off.
 
 **Yes, if:**
 - you run an agent loop, such as a Claude Code session or your own harness,
-  that should react to Slack conversations, and later GitHub and more;
+  that should react to Slack conversations or GitHub pull requests;
 - you want it idle and cheap between events, rather than polling on a timer;
 - you'd rather not stand up infrastructure to make that happen.
 
@@ -79,6 +79,9 @@ For Slack, set `SLACK_TOKEN` to a bot or user token with the history scope for
 each kind of conversation you watch: `channels:history`, `groups:history`,
 `im:history` or `mpim:history`. A bot token reads only conversations the bot
 has been added to.
+
+For GitHub, set `GITHUB_TOKEN` to a token that can read the repositories'
+pull requests, such as a fine-grained token with read access to pull requests.
 
 ## Using it from an agent
 
@@ -120,6 +123,12 @@ sources:
     exclude:                       # optional: messages to skip
       - user: U0123BOT             # every field in a rule must match
         text: '^\[op 1\]'          # a regex over Slack's raw message text
+  - type: github
+    repo: octo-org/octo-repo       # a pull request's comments and reviews
+    pull: 26
+    poll_interval: 1m              # default 1m
+    exclude:
+      - user: octo-bot             # a login; text works here too
 ```
 
 Both IDs are in the link to a thread's first message:
@@ -137,6 +146,11 @@ or when its first message is older than the conversation's latest 200 messages.
 Slack rate-limits each method to about 50 calls a minute per app, so with many
 busy or old threads, raise `poll_interval` or prune the watch set.
 
+A GitHub source reports a pull request's conversation comments, and each
+submitted review with its comments on the diff. A lone reply on the diff is a
+review too. Its polls are conditional requests, so a poll that finds nothing new
+doesn't count against GitHub's rate limit.
+
 A source's identity is derived from what it watches, such as
 `slack:C0123456789/1785600000.000200`, so the state file needs no migration as
 the watch set changes. A source you add starts from now. A source you remove
@@ -151,6 +165,8 @@ and how far each source has got:
 ```console
 $ botwatch add --config watch.yaml slack C0123456789 --thread 1785600000.000200
 added slack:C0123456789/1785600000.000200
+$ botwatch add --config watch.yaml github https://github.com/octo-org/octo-repo/pull/26
+added github:octo-org/octo-repo#26
 $ botwatch remove --config watch.yaml slack:C0123456789/1785600000.000200
 removed slack:C0123456789/1785600000.000200
 $ botwatch show --config watch.yaml --state state.yaml
@@ -172,19 +188,20 @@ Each event is one JSON line, flushed as it's written:
 | Field | Meaning |
 | --- | --- |
 | `source` | Which source it came from. |
-| `event.type` | What happened: `slack.message_posted`, or `botwatch.source_failed`. |
+| `event.type` | What happened: `slack.message_posted`, `github.comment_posted`, `github.review_submitted`, or `botwatch.source_failed`. |
 | `event.id` | Unique within its source and stable across runs. Dedupe on `(source, id)`. |
 | `event.time` | When it happened at the source. |
 
 Each event type then carries its own fields: for Slack, `conversation`, `ts`,
-`thread_ts`, `user`, `bot_id`, `username`, `subtype` and `text`; for
-`botwatch.source_failed`, `error`, what the source raised. Diagnostics go
-to stderr. The exit status is 0 after a normal run, and 2 for a bad config,
-state file or environment.
+`thread_ts`, `user`, `bot_id`, `username`, `subtype` and `text`; for GitHub,
+`repo`, `pull`, `user`, `body` and `url`, plus a review's `state` and
+`comments`, each with its `path` and `line`; for `botwatch.source_failed`,
+`error`, what the source raised. Diagnostics go to stderr. The exit status is 0
+after a normal run, and 2 for a bad config, state file or environment.
 
 ## Using it from Python
 
-The same pieces work as a library: Slack sources are async generators, and
+The same pieces work as a library: sources are async generators, and
 `botwatch.select` waits on them the way the command does. See the
 [Python API](docs/api.md).
 
@@ -198,9 +215,10 @@ The same pieces work as a library: Slack sources are async generators, and
 
 ## Status
 
-Early, but working: new messages in Slack conversations and threads. Edits,
-deletions and reactions aren't reported yet. GitHub pull requests and retiring
-sources that have gone quiet are next.
+Early, but working: new messages in Slack conversations and threads, and new
+comments and reviews on GitHub pull requests. Edits, deletions and reactions
+aren't reported yet, nor are a pull request's pushes, checks or merge. Retiring
+sources that have gone quiet is next.
 
 ## License
 

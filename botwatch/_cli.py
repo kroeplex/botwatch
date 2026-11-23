@@ -8,20 +8,37 @@ import io
 import logging
 import os
 import pydantic
+import re
 import sys
 import yaml
 from . import _config
 from . import _run
 from . import _state
+from . import github
 from . import slack
 from collections.abc import Iterator
+from collections.abc import Mapping
 from collections.abc import Sequence
 from pathlib import Path
 from typing import NoReturn
 
-_TOKEN_VARIABLE = 'SLACK_TOKEN'
+_TOKEN_VARIABLES = {'slack': 'SLACK_TOKEN', 'github': 'GITHUB_TOKEN'}
+"""The environment variable holding each source type's token."""
 
-_TOKEN_EPILOG = f'Slack sources read their token from ${_TOKEN_VARIABLE}.'
+_TOKEN_EPILOG = (
+    'Slack sources read their token from $SLACK_TOKEN, and GitHub sources from'
+    ' $GITHUB_TOKEN.'
+)
+
+_PULL_REQUEST_PATTERN = re.compile(
+    r'(?:https://github\.com/)?(?P<repo>[\w.-]+/[\w.-]+)(?:#|/pull/)(?P<pull>\d+)'
+    r'(?:[/?#].*)?',
+)
+"""A pull request, as ``OWNER/REPO#NUMBER`` or its URL."""
+
+_SOURCE_CONFIG: pydantic.TypeAdapter[_config.SourceConfig] = pydantic.TypeAdapter(
+    _config.SourceConfig,
+)
 
 _USAGE_ERROR = 2
 """The exit status for a bad command line, config or environment."""
@@ -78,23 +95,30 @@ def _build_parser() -> argparse.ArgumentParser:
         'add',
         help='watch a source, creating the config if needed',
         description=(
-            'Watch a Slack conversation, or one of its threads. For a source'
-            ' already watched, the options given replace its settings, and the'
-            ' rest are kept; `--exclude` replaces the whole list.'
+            'Watch a Slack conversation or one of its threads, or a GitHub pull'
+            " request's comments and reviews. For a source already watched, the"
+            ' options given replace its settings, and the rest are kept;'
+            ' `--exclude` replaces the whole list.'
         ),
     )
     _add_config_argument(add)
-    add.add_argument('type', choices=['slack'], help='the kind of source')
-    add.add_argument('conversation', help='the conversation ID, e.g. C0123456789')
+    add.add_argument('type', choices=['slack', 'github'], help='the kind of source')
+    add.add_argument(
+        'target',
+        help=(
+            'for slack, the conversation ID, e.g. C0123456789; for github, the'
+            ' pull request as OWNER/REPO#NUMBER or its URL'
+        ),
+    )
     add.add_argument(
         '--thread',
         metavar='TS',
-        help="a thread's first message `ts`, to watch just that thread",
+        help="slack only: a thread's first message `ts`, to watch just that thread",
     )
     add.add_argument(
         '--poll-interval',
         metavar='DURATION',
-        help='how often to poll, e.g. 15s (default 30s)',
+        help='how often to poll, e.g. 15s (default 30s for slack, 1m for github)',
     )
     add.add_argument(
         '--exclude',
@@ -102,8 +126,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar='RULE',
         help=(
-            'skip matching messages: a YAML mapping of user, bot_id, username'
-            ' and text (a regex), e.g. "{user: U0123BOT}"; repeatable'
+            'skip matching events: a YAML mapping of user and text (a regex),'
+            ' plus bot_id and username for slack, e.g. "{user: U0123BOT}";'
+            ' repeatable'
         ),
     )
 
@@ -199,16 +224,37 @@ def _save_state(
 async def _watch(
     config: _config.Config,
     state: _state.StateFile,
-    token: str,
+    tokens: Mapping[str, str],
 ) -> _state.StateFile:
-    async with slack.SlackClient(token) as client:
+    async with (
+        slack.SlackClient(tokens['slack']) as slack_client,
+        github.GitHubClient(tokens['github']) as github_client,
+    ):
         new_state = await _run.run_once(
             config,
             state,
-            slack_client=client,
+            clients=_config.Clients(slack=slack_client, github=github_client),
             out=sys.stdout,
         )
     return new_state
+
+
+def _read_tokens(config: _config.Config) -> dict[str, str]:
+    """Each source type's token, failing if a configured type has none."""
+    tokens = {
+        kind: os.environ.get(variable, '')
+        for kind, variable in _TOKEN_VARIABLES.items()
+    }
+    missing = sorted(
+        {
+            _TOKEN_VARIABLES[source.type]
+            for source in config.sources
+            if not tokens[source.type]
+        },
+    )
+    if missing:
+        _fail('set ' + ' and '.join(missing))
+    return tokens
 
 
 def _run_command(args: argparse.Namespace) -> None:
@@ -217,36 +263,47 @@ def _run_command(args: argparse.Namespace) -> None:
         _fail(f'cannot write a state file in {args.state.parent}')
     state = _read_state(args.state) if args.state is not None else _state.StateFile()
 
-    token = os.environ.get(_TOKEN_VARIABLE, '')
-    if config.sources and not token:
-        _fail(f'set {_TOKEN_VARIABLE} to a Slack token')
-
-    new_state = asyncio.run(_watch(config, state, token))
+    tokens = _read_tokens(config)
+    new_state = asyncio.run(_watch(config, state, tokens))
     if args.state is not None:
         _save_state(new_state, args.state)
+
+
+def _describe_target(args: argparse.Namespace) -> dict[str, object]:
+    """The thing ``add``'s arguments name, as the start of a source config."""
+    target: dict[str, object]
+    if args.type == 'slack':
+        target = {'type': 'slack', 'conversation': args.target}
+        if args.thread is not None:
+            target['thread_ts'] = args.thread
+    elif args.thread is not None:
+        _fail('--thread is only for slack sources')
+    elif (match := _PULL_REQUEST_PATTERN.fullmatch(args.target)) is None:
+        _fail(f'not a pull request such as octo-org/octo-repo#26: {args.target}')
+    else:
+        target = {'type': 'github', 'repo': match['repo'], 'pull': match['pull']}
+    return target
 
 
 def _parse_source(
     args: argparse.Namespace,
     config: _config.Config,
-) -> _config.SlackSourceConfig:
+) -> _config.SourceConfig:
     """The source ``add``'s arguments describe. Settings they don't give keep
     the values of the source already watched, if there is one."""
-    given: dict[str, object] = {'type': args.type, 'conversation': args.conversation}
-    if args.thread is not None:
-        given['thread_ts'] = args.thread
+    given = _describe_target(args)
     if args.poll_interval is not None:
         given['poll_interval'] = args.poll_interval
     try:
         if args.exclude:
             given['exclude'] = [yaml.safe_load(rule) for rule in args.exclude]
-        existing = config.find(_config.SlackSourceConfig.model_validate(given).key)
+        existing = config.find(_SOURCE_CONFIG.validate_python(given).key)
         kept = (
             existing.model_dump(mode='json', exclude_unset=True)
             if existing is not None
             else {}
         )
-        source = _config.SlackSourceConfig.model_validate({**kept, **given})
+        source = _SOURCE_CONFIG.validate_python({**kept, **given})
     except (ValueError, yaml.YAMLError) as error:
         _fail(f'bad source: {error}')
     return source
@@ -279,16 +336,16 @@ def _remove_command(args: argparse.Namespace) -> None:
             print(f'botwatch: not watched: {key}', file=sys.stderr)
 
 
-def _describe_position(state: slack.SlackState | None) -> str:
+def _describe_position(state: _config.SourceState | None) -> str:
     return state.describe() if state is not None else 'starts from now on its next run'
 
 
 class _ShownSource(pydantic.BaseModel):
     key: _config.SourceKey
 
-    config: _config.SlackSourceConfig
+    config: _config.SourceConfig
 
-    state: _state.SourceState | None
+    state: _config.SourceState | None
     """``None`` when it has no saved state."""
 
 

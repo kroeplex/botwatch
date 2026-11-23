@@ -22,9 +22,9 @@ Three properties shape everything below:
 
 ## Sources, updates and events
 
-A **source** watches one thing, such as one Slack conversation's top level or
-one Slack thread. In code, a source is an async generator of **updates**
-(`botwatch.Source`):
+A **source** watches one thing, such as one Slack conversation's top level,
+one Slack thread, or one GitHub pull request. In code, a source is an async
+generator of **updates** (`botwatch.Source`):
 
 ```python
 @dataclass(frozen=True)
@@ -132,8 +132,8 @@ is listening.
   still its own generator.
 - **The client** (`slack/_api.py`) parses Slack's responses into private
   models. It retries rate limiting (honouring `Retry-After`), server errors and
-  network errors without limit, logging each retry to stderr. A Slack error
-  response raises `SlackError`.
+  network errors without limit, through `_utils/http.py`, logging each retry
+  to stderr. A Slack error response raises `SlackError`.
 - **Events** are `slack.MessagePosted`, botwatch's own model: `conversation`,
   `ts`, `thread_ts`, `user`, `bot_id`, `username`, `subtype` and `text`.
   Slack's own response objects never leave the client.
@@ -141,14 +141,47 @@ is listening.
 The top level and threads are separate sources because Slack's history of a
 conversation doesn't include thread replies.
 
+## The GitHub source
+
+`github.watch(client, repo, pull, state=…, poll_interval=…)`
+(`github/_watch.py`) watches one pull request's conversation comments and its
+submitted reviews, through the REST API.
+
+- **What it reports.** `github.comment_posted` for each conversation comment,
+  and `github.review_submitted` for each review once submitted, carrying the
+  review's comments on the diff. Every diff comment belongs to a review, even a
+  lone reply, so reviews cover them all.
+- **State.** The state is a time, `after`, by GitHub's clock, plus `seen`, the
+  IDs of the events from then on already reported. A review is placed by when
+  it was submitted rather than by its ID, which it takes while still pending.
+- **Settling.** GitHub's timestamps don't follow the order in which events
+  become visible, and a poll lists events in several calls. So `after` trails
+  the newest event reported, by up to ten seconds before the poll began, and
+  `seen` keeps the next poll from reporting again what it lists twice.
+- **Starting.** A fresh source starts from now by GitHub's clock: the `Date`
+  of a call that doesn't count against the rate limit. Each poll starts the
+  same way.
+- **Polling.** Each poll lists the comments since `after`, every review, and,
+  when a review is new, every diff comment, grouped into its review. A pure
+  step, `_apply_poll`, keeps the events not yet reported, oldest first, and
+  advances the state.
+- **The client** (`github/_api.py`) counts a list's pages, since a 304 carries
+  no `Link` header, and keeps each page's `ETag` to ask again conditionally.
+  An unchanged poll is then answered with 304s, which GitHub doesn't count
+  against the rate limit. It retries rate limiting (honouring `Retry-After`,
+  the rate limit's reset, or a minute for a secondary limit), server errors and
+  network errors without limit, and follows redirects; any other error raises
+  `GitHubError`.
+
 ## Stages
 
 A stage wraps a source and is itself a source. `botwatch.exclude_events` drops
 the events a predicate matches but keeps each update's state, so skipped events
 still move the source along. An update whose events are all dropped becomes a
-plain checkpoint. Slack's `exclude` config is built from it, with rules over
-`user`, `bot_id`, `username` and a `text` regex. A rule matches when every field
-set in it matches, and a message is skipped when any rule matches.
+plain checkpoint. Each source type's `exclude` config is built from it: Slack's
+rules are over `user`, `bot_id`, `username` and a `text` regex, and GitHub's
+over `user` and a `text` regex. A rule matches when every field set in it
+matches, and an event is skipped when any rule matches.
 
 ## Code map
 
@@ -157,20 +190,21 @@ set in it matches, and a message is skipped when any rule matches.
 | `_source.py` | `Event`, `Update`, `Source` |
 | `_select.py` | `select`, and the private `_linger` timing combinator |
 | `_exclude.py` | `exclude_events` |
-| `_config.py` | The config models: durations, source keys, `SlackSourceConfig`, and the edits `add` and `remove` make |
+| `_config.py` | The config models: durations, source keys, each type's source config and state union, `Clients`, and the edits `add` and `remove` make |
 | `_state.py` | `StateFile` |
 | `_run.py` | `run_once`, the output `Record` and `SourceFailed` |
 | `_cli.py` | The `botwatch` command: `run`, `add`, `remove` and `show` |
-| `_utils/` | Datetime formatting and the atomic file write |
+| `_utils/` | Datetime formatting, the atomic file write, and retrying HTTP calls |
 | `slack/` | The Slack client, timestamps, the source and `ExcludeRule` |
+| `github/` | The GitHub client, the source and `ExcludeRule` |
 
 Adding a source type means adding:
 - a generator that yields updates;
-- its state model, with a `type` literal, to `SourceState` (`_state.py`);
+- its state model, with a `type` literal, to `SourceState` (`_config.py`);
 - its event models, to the output union (`_run.py`);
-- a config model with a `key` and a `watch(client, state=…)` method, to
-  `Config.sources`;
-- its client, created in `_cli.py` and passed through `run_once`;
+- a config model with a `key` and a `watch(clients, state=…)` method, to
+  `SourceConfig`;
+- its client, to `Clients`, created in `_cli.py` with its token;
 - its arguments to `botwatch add`, and a `describe()` on its state for
   `botwatch show`.
 
@@ -186,7 +220,9 @@ that source, the events successive runs emit for it form the same sequence
 however each run ends, a crash included, once repeats are dropped by
 `(source, id)` and `botwatch.*` events are ignored. Only a run that ends
 without saving its state, such as a crash, may cause repeats, and no event is
-ever skipped.
+ever skipped. A GitHub source is held to the same set of events but not to one
+order, since GitHub can reveal events out of time order, and its whole-second
+times don't order the events within one second.
 
 A new source's state is first saved by a run that ends normally after the
 source has delivered its first update. Until then, each run starts it from that

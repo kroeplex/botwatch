@@ -29,10 +29,10 @@ def test_main(
 
     _cli.main([*command, '--config', str(path)])
 
-    config, state, token = watch.call_args.args
+    config, state, tokens = watch.call_args.args
     assert [source.key for source in config.sources] == ['slack:C0123456789']
     assert state == _state.StateFile()
-    assert token == 'xoxb-test'
+    assert tokens['slack'] == 'xoxb-test'
 
 
 def test_main__keeps_the_state(
@@ -109,20 +109,33 @@ def test_main__fails_on_a_bad_config(
     assert 'bad config' in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ('config', 'message'),
+    [
+        (_CONFIG, 'set SLACK_TOKEN\n'),
+        (
+            'sources: [{type: github, repo: o/r, pull: 1}, {type: slack, conversation: C1}]',
+            'set GITHUB_TOKEN and SLACK_TOKEN\n',
+        ),
+    ],
+)
 def test_main__fails_without_a_token(
+    config: str,
+    message: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     path = tmp_path / 'watch.yaml'
-    path.write_text(_CONFIG)
+    path.write_text(config)
     monkeypatch.delenv('SLACK_TOKEN', raising=False)
+    monkeypatch.delenv('GITHUB_TOKEN', raising=False)
 
     with pytest.raises(SystemExit) as exited:
         _cli.main(['--config', str(path)])
 
     assert exited.value.code == 2
-    assert 'set SLACK_TOKEN' in capsys.readouterr().err
+    assert capsys.readouterr().err.endswith(message)
 
 
 def test_main__writes_only_json_lines_to_stdout(
@@ -333,6 +346,48 @@ class Test_main__add:
         config = _config.Config.load(path)
         assert [source.key for source in config.sources] == ['slack:C1', 'slack:C2']
         assert config.sources[0].poll_interval == timedelta(minutes=1)
+
+    @pytest.mark.parametrize(
+        'target',
+        [
+            'octo-org/octo-repo#26',
+            'https://github.com/octo-org/octo-repo/pull/26',
+            'https://github.com/octo-org/octo-repo/pull/26/files?w=1',
+            'https://github.com/octo-org/octo-repo/pull/26#issuecomment-1',
+        ],
+    )
+    def test__adds_a_pull_request(
+        self,
+        target: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = tmp_path / 'watch.yaml'
+
+        out, _ = _invoke(capsys, 'add', '--config', path, 'github', target)
+
+        assert out == 'added github:octo-org/octo-repo#26\n'
+        assert path.read_text() == (
+            'sources:\n- type: github\n  repo: octo-org/octo-repo\n  pull: 26\n'
+        )
+
+    @pytest.mark.parametrize(
+        ('arguments', 'message'),
+        [
+            (['github', 'octo-org/octo-repo'], 'not a pull request'),
+            (['github', 'octo-org/octo-repo#26', '--thread', '1'], 'only for slack'),
+        ],
+    )
+    def test__fails_on_a_bad_pull_request(
+        self,
+        arguments: list[str],
+        message: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        err = _fail(capsys, 'add', '--config', tmp_path / 'watch.yaml', *arguments)
+
+        assert message in err
 
     def test__keeps_settings_not_given(
         self,

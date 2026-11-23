@@ -4,13 +4,8 @@ import pydantic
 import yaml
 from . import _config
 from . import _utils
-from . import slack
 from pathlib import Path
 from typing import Self
-
-type SourceState = slack.SlackState
-"""Any source's state. Becomes a union discriminated on ``type`` as source types
-are added."""
 
 
 class StateFile(pydantic.BaseModel):
@@ -18,7 +13,7 @@ class StateFile(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(extra='forbid', frozen=True)
 
-    sources: dict[_config.SourceKey, SourceState] = pydantic.Field(
+    sources: dict[_config.SourceKey, _config.SourceState] = pydantic.Field(
         default_factory=dict,
     )
 

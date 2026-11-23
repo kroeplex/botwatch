@@ -12,6 +12,7 @@ from . import _config
 from . import _select
 from . import _source
 from . import _state
+from . import github
 from . import slack
 from datetime import datetime
 from datetime import timezone
@@ -31,8 +32,11 @@ class SourceFailed(_source.Event):
     """What the source raised."""
 
 
+type SourceEvent = slack.MessagePosted | github.CommentPosted | github.ReviewSubmitted
+"""Every event a source can emit."""
+
 type OutputEvent = Annotated[
-    slack.MessagePosted | SourceFailed,
+    SourceEvent | SourceFailed,
     pydantic.Field(discriminator='type'),
 ]
 """Every event a run can write."""
@@ -66,7 +70,7 @@ async def run_once(
     config: _config.Config,
     state: _state.StateFile,
     *,
-    slack_client: slack.SlackClient,
+    clients: _config.Clients,
     out: TextIO,
 ) -> _state.StateFile:
     """Starts every configured source from its state in ``state``, or from now,
@@ -77,9 +81,12 @@ async def run_once(
     update. A source that failed keeps the state of its last update before the
     failure.
     """
-    sources = {
+    sources: dict[
+        _config.SourceKey,
+        _source.Source[_config.SourceState, SourceEvent],
+    ] = {
         source.key: source.watch(
-            slack_client,
+            clients,
             state=state.sources.get(source.key),
         )
         for source in config.sources

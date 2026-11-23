@@ -46,8 +46,8 @@ what it describes keeps current.
   generators and turbopipes. Beyond those, they describe behaviour; any code is
   a labelled sketch.
 - **A *source* is one thing being watched**: a Slack conversation's top level,
-  or one Slack thread. botwatch only reads from it. Don't use "channel" for a
-  source; say "Slack channel" when you mean one.
+  one Slack thread, or one GitHub pull request. botwatch only reads from it.
+  Don't use "channel" for a source; say "Slack channel" when you mean one.
 - **Issue tracker:** [`docs/issues/`](docs/issues/); regenerate its index with
   `scripts/render_issues`.
 

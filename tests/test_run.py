@@ -3,10 +3,12 @@ import contextlib
 import io
 import json
 import pytest
+from . import _fake_github
 from . import _fake_slack
 from botwatch import _config
 from botwatch import _run
 from botwatch import _state
+from botwatch import github
 from botwatch import slack
 from datetime import timedelta
 
@@ -32,6 +34,16 @@ _FAILING_KEY = _config.SourceKey('slack:C0NO')
 
 _FAILING_STATE = slack.SlackState(after=_PARENT)
 """The saved state of a source that fails, which it must keep."""
+
+
+def _clients(
+    slack_client: slack.SlackClient,
+    github_client: github.GitHubClient | None = None,
+) -> _config.Clients:
+    return _config.Clients(
+        slack=slack_client,
+        github=github_client or _fake_github.FakeGitHub().create_client(),
+    )
 
 
 def _create_ts(number: int) -> str:
@@ -66,7 +78,7 @@ async def test_run_once() -> None:
         state = await _run.run_once(
             config,
             _state.StateFile(sources={_FAILING_KEY: _FAILING_STATE}),
-            slack_client=client,
+            clients=_clients(client),
             out=out,
         )
         await poster
@@ -118,7 +130,7 @@ async def test_run_once__resumes_each_source_from_its_state() -> None:
         state = await _run.run_once(
             config,
             previous,
-            slack_client=client,
+            clients=_clients(client),
             out=out,
         )
 
@@ -145,39 +157,91 @@ async def _post_over_time(
         )
 
 
+_PULL_REQUEST = _config.GitHubSourceConfig(
+    type='github',
+    repo=_fake_github.REPO,
+    pull=_fake_github.PULL,
+    poll_interval=_POLL,
+)
+
+
+async def _post_to_github_over_time(
+    fake: _fake_github.FakeGitHub,
+    count: int,
+) -> None:
+    """Posts ``count`` comments and reviews 20ms apart, as GitHub's clock moves
+    on 20s each time. One step posts two in the same second, one comment is
+    revealed after a newer event, and a review started before them all is
+    submitted last."""
+    early = fake.start_review()
+    fake.add_review_comment(early, 'started first')
+    for number in range(1, count + 1):
+        await asyncio.sleep(0.02)
+        if number == 7:
+            fake.comment(20 * (number - 1) - 5, body='revealed late')
+        fake.now = _fake_github.at(20 * number)
+        if number % 2:
+            fake.comment(20 * number)
+        else:
+            fake.review(20 * number)
+        if number == 4:
+            fake.comment(20 * number, body='in the same second')
+    fake.submit(early, 20 * count, body='submitted last')
+
+
+def _list_github_ids(fake: _fake_github.FakeGitHub) -> list[str]:
+    return [
+        *(f'comment-{comment.id}' for comment in fake.comments),
+        *(
+            f'review-{review.id}'
+            for review in fake.reviews
+            if review.submitted_at is not None
+        ),
+    ]
+
+
 async def _watch_in_runs(
     linger: timedelta,
     crash_after: timedelta | None,
-) -> list[tuple[str, str, str]]:
-    """Runs botwatch again and again while messages arrive, carrying the state
-    from run to run, and returns every record written.
+) -> tuple[list[tuple[str, str, str]], list[str]]:
+    """Runs botwatch again and again while messages, comments and reviews
+    arrive, carrying the state from run to run. Returns every record written,
+    and the IDs of the GitHub events posted.
 
     With ``crash_after``, every other run is killed that long after it starts,
     before it can return its state.
     """
     fake = _fake_slack.FakeSlack()
     fake.post(_PARENT)
+    fake_github = _fake_github.FakeGitHub()
     config = _config.Config(
         quiet_timeout=timedelta(seconds=0.1),
         linger=linger,
-        sources=(_TOP, _THREAD),
+        sources=(_TOP, _THREAD, _PULL_REQUEST),
     )
     state = _state.StateFile(
         sources={
             _TOP.key: slack.SlackState(after=_PARENT),
             _THREAD.key: slack.SlackState(after=_PARENT),
+            _PULL_REQUEST.key: github.GitHubState(after=_fake_github.at(0)),
         },
     )
     out = io.StringIO()
 
-    async with fake.create_client() as client:
-        poster = asyncio.create_task(_post_over_time(fake, 12))
+    async with (
+        fake.create_client() as client,
+        fake_github.create_client() as github_client,
+    ):
+        posters = asyncio.gather(
+            _post_over_time(fake, 12),
+            _post_to_github_over_time(fake_github, 12),
+        )
         crashes = crash_after is not None
-        while not poster.done():
+        while not posters.done():
             run = _run.run_once(
                 config,
                 state,
-                slack_client=client,
+                clients=_clients(client, github_client),
                 out=out,
             )
             if crash_after is not None and crashes:
@@ -189,11 +253,11 @@ async def _watch_in_runs(
         state = await _run.run_once(
             config,
             state,
-            slack_client=client,
+            clients=_clients(client, github_client),
             out=out,
         )
 
-    return _read_records(out)
+    return _read_records(out), _list_github_ids(fake_github)
 
 
 @pytest.mark.parametrize(
@@ -211,7 +275,7 @@ async def test_run_once__where_a_run_ends_never_changes_what_is_emitted(
 ) -> None:
     """The design spec "Where a run ends never changes what is emitted", in
     ``docs/design.md``."""
-    records = await _watch_in_runs(linger, crash_after)
+    records, github_ids = await _watch_in_runs(linger, crash_after)
 
     first_seen = list(dict.fromkeys(records))
     assert [id_ for source, _, id_ in first_seen if source == _TOP.key] == [
@@ -220,6 +284,11 @@ async def test_run_once__where_a_run_ends_never_changes_what_is_emitted(
     assert [id_ for source, _, id_ in first_seen if source == _THREAD.key] == [
         _create_ts(number) for number in range(1, 13, 2)
     ]
+    # GitHub can reveal events out of time order, and its whole-second times
+    # don't order the events within one second, so only the set is fixed.
+    assert sorted(
+        id_ for source, _, id_ in first_seen if source == _PULL_REQUEST.key
+    ) == sorted(github_ids)
     if crash_after is None:
         assert records == first_seen
     else:
@@ -244,9 +313,51 @@ async def test_run_once__skips_excluded_messages_but_moves_past_them() -> None:
         state = await _run.run_once(
             config,
             previous,
-            slack_client=client,
+            clients=_clients(client),
             out=out,
         )
 
     assert [record[2] for record in _read_records(out)] == [_create_ts(2)]
     assert state.sources[_TOP.key] == slack.SlackState(after=_create_ts(3))
+
+
+async def test_run_once__writes_github_events() -> None:
+    fake_github = _fake_github.FakeGitHub(now=_fake_github.at(20))
+    fake_github.comment(3, body='please look')
+    fake_github.review(4, body='approved')
+    source = _config.GitHubSourceConfig(
+        type='github',
+        repo=_fake_github.REPO,
+        pull=_fake_github.PULL,
+        poll_interval=_POLL,
+    )
+    config = _config.Config(
+        quiet_timeout=timedelta(seconds=5),
+        linger=timedelta(seconds=0.05),
+        sources=(source,),
+    )
+    out = io.StringIO()
+
+    async with (
+        _fake_slack.FakeSlack().create_client() as slack_client,
+        fake_github.create_client() as github_client,
+    ):
+        state = await _run.run_once(
+            config,
+            _state.StateFile(
+                sources={source.key: github.GitHubState(after=_fake_github.at(2))},
+            ),
+            clients=_clients(slack_client, github_client),
+            out=out,
+        )
+
+    records = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert [record['source'] for record in records] == [source.key] * 2
+    assert [record['event']['type'] for record in records] == [
+        'github.comment_posted',
+        'github.review_submitted',
+    ]
+    assert state.sources[source.key] == github.GitHubState(
+        after=_fake_github.at(4),
+        seen={records[1]['event']['id']: _fake_github.at(4)},
+    )

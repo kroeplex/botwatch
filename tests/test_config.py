@@ -48,6 +48,23 @@ class Test_Config__load:
         assert config.quiet_timeout == timedelta(minutes=20)
         assert [source.key for source in config.sources] == ['slack:C1']
 
+    def test__reads_github_sources(self, tmp_path: Path) -> None:
+        path = tmp_path / 'watch.yaml'
+        path.write_text(
+            'sources:\n'
+            '  - type: github\n'
+            '    repo: octo-org/octo-repo\n'
+            '    pull: 26\n'
+            '    exclude: [{user: octobot}]\n',
+        )
+
+        config = _config.Config.load(path)
+
+        assert [source.key for source in config.sources] == [
+            'github:octo-org/octo-repo#26',
+        ]
+        assert config.sources[0].poll_interval == timedelta(minutes=1)
+
 
 @pytest.mark.parametrize(
     'document',
@@ -64,6 +81,9 @@ class Test_Config__load:
         {'sources': [{'type': 'slack', 'conversation': 'general'}]},
         {'sources': [{'type': 'slack', 'conversation': 'C1/2'}]},
         {'sources': [{'type': 'slack', 'conversation': 'C1', 'poll_interval': '0s'}]},
+        {'sources': [{'type': 'github', 'repo': 'octo-repo', 'pull': 1}]},
+        {'sources': [{'type': 'github', 'repo': 'octo-org/octo-repo', 'pull': 0}]},
+        {'sources': [{'type': 'github', 'repo': 'o/r', 'pull': 1, 'thread_ts': '1'}]},
         {'linger': '0.4ms'},
         {'linger': '1.0004s'},
     ],
