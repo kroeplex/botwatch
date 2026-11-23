@@ -1,6 +1,8 @@
+import asyncio
 import json
 import pytest
 import re
+import sys
 from . import _fake_slack
 from botwatch import _cli
 from botwatch import _config
@@ -87,7 +89,7 @@ def test_main__fails_on_a_bad_state_file(
 
 @pytest.mark.parametrize(
     'config',
-    [None, b'sources: [{type: slack}]', b'sources: [', b'sources: ["\xff"]'],
+    [None, b'', b'sources: [{type: slack}]', b'sources: [', b'sources: ["\xff"]'],
 )
 def test_main__fails_on_a_bad_config(
     config: bytes | None,
@@ -212,6 +214,14 @@ def test_main__keeps_the_old_state_when_the_run_fails(
     assert _state.StateFile.load(state_path) == previous
 
 
+def test_main__suggests_a_command_for_a_typo(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    err = _fail(capsys, 'shwo', '--config', 'watch.yaml')
+
+    assert "maybe you meant 'show'?" in err
+
+
 def _invoke(
     capsys: pytest.CaptureFixture[str],
     *arguments: str | Path,
@@ -240,7 +250,7 @@ def _save_state(path: Path, **positions: str) -> None:
     ).save(path)
 
 
-class Test_add:
+class Test_main__add:
     def test__creates_the_config(
         self,
         tmp_path: Path,
@@ -251,7 +261,9 @@ class Test_add:
         out, _ = _invoke(capsys, 'add', '--config', path, 'slack', 'C0123456789')
 
         assert out == 'added slack:C0123456789\n'
-        assert path.read_text() == _CONFIG.replace('  - ', '- ').replace('    ', '  ')
+        assert (
+            path.read_text() == 'sources:\n- type: slack\n  conversation: C0123456789\n'
+        )
 
     def test__adds_a_thread_with_settings(
         self,
@@ -322,6 +334,59 @@ class Test_add:
         assert [source.key for source in config.sources] == ['slack:C1', 'slack:C2']
         assert config.sources[0].poll_interval == timedelta(minutes=1)
 
+    def test__keeps_settings_not_given(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = tmp_path / 'watch.yaml'
+        _invoke(
+            capsys,
+            'add',
+            '--config',
+            path,
+            'slack',
+            'C1',
+            '--exclude',
+            '{user: U0BOT}',
+        )
+
+        out, _ = _invoke(
+            capsys,
+            'add',
+            '--config',
+            path,
+            'slack',
+            'C1',
+            '--poll-interval',
+            '1m',
+        )
+
+        assert out == 'updated slack:C1\n'
+        assert path.read_text() == (
+            'sources:\n'
+            '- type: slack\n'
+            '  conversation: C1\n'
+            '  poll_interval: 1m\n'
+            '  exclude:\n'
+            '  - user: U0BOT\n'
+        )
+
+    async def test__keeps_concurrent_additions(self, tmp_path: Path) -> None:
+        path = tmp_path / 'watch.yaml'
+        command = [sys.executable, '-m', 'botwatch', 'add', '--config', str(path)]
+
+        processes = [
+            await asyncio.create_subprocess_exec(*command, 'slack', f'C{number}')
+            for number in range(8)
+        ]
+
+        assert [await process.wait() for process in processes] == [0] * 8
+        config = _config.Config.load(path)
+        assert sorted(source.key for source in config.sources) == [
+            f'slack:C{number}' for number in range(8)
+        ]
+
     @pytest.mark.parametrize(
         'option',
         [
@@ -360,7 +425,7 @@ class Test_add:
         assert path.read_text() == 'sources: ['
 
 
-class Test_remove:
+class Test_main__remove:
     def test__removes_sources(
         self,
         tmp_path: Path,
@@ -398,8 +463,23 @@ class Test_remove:
         assert err == 'botwatch: not watched: slack:C9\n'
         assert path.read_text() == f'# watched by hand\n{_CONFIG}'
 
+    def test__reports_nothing_when_saving_fails(
+        self,
+        tmp_path: Path,
+        mocker: MockerFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = tmp_path / 'watch.yaml'
+        path.write_text(_CONFIG)
+        mocker.patch.object(_config.Config, 'save', side_effect=PermissionError())
 
-class Test_show:
+        err = _fail(capsys, 'remove', '--config', path, 'slack:C0123456789')
+
+        assert 'cannot save the config' in err
+        assert not capsys.readouterr().out
+
+
+class Test_main__show:
     def test__lists_the_sources(
         self,
         tmp_path: Path,
@@ -469,7 +549,7 @@ class Test_show:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         path = tmp_path / 'watch.yaml'
-        path.touch()
+        path.write_text('{}')
 
         out, _ = _invoke(capsys, 'show', '--config', path)
 
@@ -544,6 +624,27 @@ class Test_show:
             ],
             'unconfigured_state': ['slack:C0OLD'],
         }
+
+    def test__notes_a_missing_state_file(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        config_path = tmp_path / 'watch.yaml'
+        config_path.write_text(_CONFIG)
+        state_path = tmp_path / 'state.yaml'
+
+        out, err = _invoke(
+            capsys,
+            'show',
+            '--config',
+            config_path,
+            '--state',
+            state_path,
+        )
+
+        assert err == f'botwatch: no state file at {state_path} yet\n'
+        assert 'starts from now on its next run' in out
 
     def test__fails_on_a_bad_state_file(
         self,

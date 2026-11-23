@@ -64,9 +64,10 @@ Prints `added`, `updated` or `unchanged`, and the source's key.
 | `--poll-interval DURATION` | How often to poll, such as `15s`. Default `30s`. |
 | `--exclude RULE` | Messages to skip, as a YAML mapping, such as `'{user: U0123BOT}'` or `"{text: '^\[op 1\]'}"`. Repeat it for more rules. See [Configuration](../README.md#configuration). |
 
-A source that's already watched gets exactly the settings given, so repeat any
-you want to keep. Its key is unchanged, so it keeps its place in the state file.
-The config is created if it doesn't exist.
+For a source that's already watched, the options given replace its settings
+and the rest are kept; `--exclude` replaces the whole list. To reset a source,
+`remove` it and `add` it again. Its key is unchanged either way, so it keeps its
+place in the state file. The config is created if it doesn't exist.
 
 ## `remove`
 
@@ -79,9 +80,10 @@ Stops watching the sources with these keys, as `add` and `show` print them.
 Prints `removed` and each key removed; a key that isn't watched is reported on
 stderr and isn't an error. The next run drops their entries from the state file.
 
-`add` and `remove` rewrite the config, atomically, with every setting at its
-default left out, so comments and formatting in it are lost. A `.json` config
-stays JSON.
+`add` and `remove` rewrite the config atomically, keeping just the settings it
+gives, so comments and formatting in it are lost. A `.json` config stays JSON.
+They hold a lock on a hidden `.CONFIG.lock` file beside it, so edits made at
+the same time all land.
 
 ## `show`
 
@@ -96,7 +98,8 @@ In state.yaml but no longer configured, dropped on the next run:
 
 Validates the config, and the state file if given, and lists each source with
 its poll interval and, given the state, how far it has got. It also lists state
-entries for sources no longer configured.
+entries for sources no longer configured. A state file that doesn't exist yet
+is noted on stderr.
 
 With `--json` it prints one JSON object instead:
 

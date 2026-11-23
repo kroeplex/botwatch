@@ -1,5 +1,3 @@
-# pylint: disable=protected-access
-
 import pydantic
 import pytest
 import re
@@ -66,6 +64,8 @@ class Test_Config__load:
         {'sources': [{'type': 'slack', 'conversation': 'general'}]},
         {'sources': [{'type': 'slack', 'conversation': 'C1/2'}]},
         {'sources': [{'type': 'slack', 'conversation': 'C1', 'poll_interval': '0s'}]},
+        {'linger': '0.4ms'},
+        {'linger': '1.0004s'},
     ],
 )
 def test_Config__rejects_invalid(document: dict[str, object]) -> None:
@@ -78,7 +78,9 @@ def test_Config__rejects_invalid(document: dict[str, object]) -> None:
     ['500ms', '1500ms', '5s', '90s', '55m', '1h', '25h', '0s'],
 )
 def test_format_duration__reads_back_unchanged(text: str) -> None:
-    assert _config._format_duration(_config._parse_duration(text)) == text
+    linger = _config.Config.model_validate({'linger': text}).linger
+
+    assert _config.format_duration(linger) == text
 
 
 def _slack(conversation: str, **settings: object) -> _config.SlackSourceConfig:
@@ -108,11 +110,11 @@ def test_Config__without() -> None:
     ).sources == (_slack('C2'),)
 
 
-def test_Config__to_text__leaves_out_defaults() -> None:
+def test_Config__to_text__writes_just_the_settings_given() -> None:
     config = _config.Config(
         linger=timedelta(seconds=2),
         sources=(
-            _slack('C1'),
+            _slack('C1', poll_interval='30s'),  # the default, pinned
             _slack(
                 'C1',
                 thread_ts='1785600000.000200',
@@ -127,6 +129,7 @@ def test_Config__to_text__leaves_out_defaults() -> None:
         'sources:\n'
         '- type: slack\n'
         '  conversation: C1\n'
+        '  poll_interval: 30s\n'
         '- type: slack\n'
         '  conversation: C1\n'
         "  thread_ts: '1785600000.000200'\n"
@@ -147,7 +150,7 @@ def test_Config__save__reads_back_unchanged(name: str, tmp_path: Path) -> None:
                 'C1',
                 thread_ts='1785600000.000200',
                 poll_interval='1500ms',
-                exclude=[{'bot_id': 'B0BOT', 'text': '(?i)^bot:'}],
+                exclude=[{'bot_id': 'B0BOT', 'text': '(?i)^bot:'}, {'text': '^🤖'}],
             ),
         ),
     )

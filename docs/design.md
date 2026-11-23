@@ -87,8 +87,9 @@ ends normally, a crashed run's events are repeated by the next run.
 ## Editing the watch set
 
 `botwatch add` and `botwatch remove` load the config, change its sources
-(`Config.with_source`, `Config.without`), and write it back atomically with
-every default left out. They never touch the state file: since keys derive from
+(`Config.with_source`, `Config.without`), and write it back atomically,
+keeping just the settings it gives, under a lock on a file beside it. They
+never touch the state file: since keys derive from
 what a source watches, an added source has no entry until a run saves one, and
 a removed source's entry is dropped by the next run's save. `botwatch show`
 reads both files and changes neither.

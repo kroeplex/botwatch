@@ -12,8 +12,9 @@ def write_atomically(
     ``path``, so a reader sees the old file or the new one, never a torn one.
 
     The temporary file is removed if anything fails, and an existing file's
-    permissions carry over.
+    permissions carry over. A symlink is written through, to its target.
     """
+    path = path.resolve()
     with tempfile.NamedTemporaryFile(
         'w',
         encoding='utf-8',

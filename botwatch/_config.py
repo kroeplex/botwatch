@@ -43,13 +43,15 @@ def _parse_duration(value: object) -> timedelta:
             raise ValueError(f'duration too long: {value}') from error
     else:
         raise ValueError(f'not a duration such as 5s or 55m: {value!r}')
+    if duration % timedelta(milliseconds=1):
+        raise ValueError(f'not a whole number of milliseconds: {value}')
     return duration
 
 
-def _format_duration(duration: timedelta) -> str:
+def format_duration(duration: timedelta) -> str:
     """Writes a duration in the largest unit that keeps it whole, so it reads
     back unchanged."""
-    milliseconds = round(duration.total_seconds() * 1000)
+    milliseconds = duration // timedelta(milliseconds=1)
     unit, size = next(
         (unit, size)
         for unit, size in [('h', 3_600_000), ('m', 60_000), ('s', 1000), ('ms', 1)]
@@ -61,7 +63,7 @@ def _format_duration(duration: timedelta) -> str:
 type Duration = Annotated[
     timedelta,
     pydantic.BeforeValidator(_parse_duration),
-    pydantic.PlainSerializer(_format_duration, when_used='json'),
+    pydantic.PlainSerializer(format_duration, when_used='json'),
 ]
 """A timedelta, written in a config as ``500ms``, ``5s``, ``55m`` or ``1h``."""
 
@@ -168,21 +170,25 @@ class Config(pydantic.BaseModel):
         )
 
     def to_text(self, *, is_json: bool = False) -> str:
-        """The config as YAML, or JSON, leaving out every setting at its
-        default."""
-        document = self.model_dump(mode='json', exclude_defaults=True)
+        """The config as YAML, or JSON, with just the settings that were
+        given."""
+        document = self.model_dump(mode='json', exclude_unset=True)
         return (
             json.dumps(document, indent=2) + '\n'
             if is_json
-            else yaml.safe_dump(document, sort_keys=False)
+            else yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
         )
 
     @classmethod
     def load(cls, path: Path) -> Self:
-        """Reads a YAML config file. JSON is YAML, so JSON works too. An empty
-        file is an empty config."""
+        """Reads a config file: JSON when ``path`` ends in ``.json``, as
+        :meth:`save` writes it, and YAML otherwise."""
         text = path.read_text(encoding='utf-8')
-        return cls.model_validate(yaml.safe_load(text) or {})
+        return (
+            cls.model_validate_json(text)
+            if path.suffix == '.json'
+            else cls.model_validate(yaml.safe_load(text))
+        )
 
     def save(self, path: Path) -> None:
         """Writes the config atomically, as JSON when ``path`` ends in ``.json``

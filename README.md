@@ -158,7 +158,8 @@ quiet_timeout 55m, linger 5s
   slack:C0123456789  every 30s  after 2026-08-01 16:02:03 UTC
 ```
 
-Neither touches the state file. See the [CLI reference](docs/cli.md).
+`add` and `remove` never touch the state file. See the
+[CLI reference](docs/cli.md).
 
 ## Output
 
