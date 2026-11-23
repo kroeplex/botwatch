@@ -221,7 +221,8 @@ however each run ends, a crash included, once repeats are dropped by
 `(source, id)` and `botwatch.*` events are ignored. Only a run that ends
 without saving its state, such as a crash, may cause repeats, and no event is
 ever skipped. A GitHub source is held to the same set of events but not to one
-order, since GitHub can reveal events out of the order of their times.
+order, since GitHub can reveal events out of time order, and its whole-second
+times don't order the events within one second.
 
 A new source's state is first saved by a run that ends normally after the
 source has delivered its first update. Until then, each run starts it from that

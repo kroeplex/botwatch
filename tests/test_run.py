@@ -170,12 +170,15 @@ async def _post_to_github_over_time(
     count: int,
 ) -> None:
     """Posts ``count`` comments and reviews 20ms apart, as GitHub's clock moves
-    on 20s each time. One step posts two in the same second, and a review
-    started before them all is submitted last."""
+    on 20s each time. One step posts two in the same second, one comment is
+    revealed after a newer event, and a review started before them all is
+    submitted last."""
     early = fake.start_review()
     fake.add_review_comment(early, 'started first')
     for number in range(1, count + 1):
         await asyncio.sleep(0.02)
+        if number == 7:
+            fake.comment(20 * (number - 1) - 5, body='revealed late')
         fake.now = _fake_github.at(20 * number)
         if number % 2:
             fake.comment(20 * number)
@@ -281,8 +284,8 @@ async def test_run_once__where_a_run_ends_never_changes_what_is_emitted(
     assert [id_ for source, _, id_ in first_seen if source == _THREAD.key] == [
         _create_ts(number) for number in range(1, 13, 2)
     ]
-    # GitHub can reveal events out of the order of their times, so only the
-    # set is fixed.
+    # GitHub can reveal events out of time order, and its whole-second times
+    # don't order the events within one second, so only the set is fixed.
     assert sorted(
         id_ for source, _, id_ in first_seen if source == _PULL_REQUEST.key
     ) == sorted(github_ids)
@@ -356,5 +359,5 @@ async def test_run_once__writes_github_events() -> None:
     ]
     assert state.sources[source.key] == github.GitHubState(
         after=_fake_github.at(4),
-        seen=(records[1]['event']['id'],),
+        seen={records[1]['event']['id']: _fake_github.at(4)},
     )

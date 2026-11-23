@@ -31,7 +31,7 @@ def _comment(event_id: str, time: datetime) -> github.CommentPosted:
 
 class Test_apply_poll:
     def test__reports_new_events_oldest_first(self) -> None:
-        state = github.GitHubState(after=at(1), seen=('comment-1',))
+        state = github.GitHubState(after=at(1), seen={'comment-1': at(1)})
         events = [
             _comment('comment-3', at(3)),
             _comment('comment-1', at(1)),
@@ -41,7 +41,10 @@ class Test_apply_poll:
         update = _watch._apply_poll(state, events, settled_before=at(10))
 
         assert [event.id for event in update.events] == ['comment-2', 'comment-3']
-        assert update.state == github.GitHubState(after=at(3), seen=('comment-3',))
+        assert update.state == github.GitHubState(
+            after=at(3),
+            seen={'comment-3': at(3)},
+        )
 
     def test__trails_events_that_may_not_have_settled(self) -> None:
         state = github.GitHubState(after=at(1))
@@ -50,10 +53,34 @@ class Test_apply_poll:
         update = _watch._apply_poll(state, events, settled_before=at(2))
 
         assert [event.id for event in update.events] == ['comment-1', 'comment-3']
-        assert update.state == github.GitHubState(after=at(2), seen=('comment-3',))
+        assert update.state == github.GitHubState(
+            after=at(2),
+            seen={'comment-3': at(3)},
+        )
+
+    def test__remembers_reported_events_a_listing_misses(self) -> None:
+        state = github.GitHubState(
+            after=at(10),
+            seen={'comment-1': at(16), 'comment-2': at(15)},
+        )
+        listed = [_comment('comment-2', at(15)), _comment('comment-3', at(20))]
+
+        first = _watch._apply_poll(state, listed, settled_before=at(14))
+        second = _watch._apply_poll(
+            first.state,
+            [_comment('comment-1', at(16)), *listed],
+            settled_before=at(14),
+        )
+
+        assert [event.id for event in first.events] == ['comment-3']
+        assert first.state == github.GitHubState(
+            after=at(14),
+            seen={'comment-1': at(16), 'comment-2': at(15), 'comment-3': at(20)},
+        )
+        assert not second.events
 
     def test__without_new_events_keeps_the_state(self) -> None:
-        state = github.GitHubState(after=at(1), seen=('comment-1',))
+        state = github.GitHubState(after=at(1), seen={'comment-1': at(1)})
 
         update = _watch._apply_poll(
             state,
@@ -124,7 +151,10 @@ class Test_watch:
         fake = _fake_github.FakeGitHub()
         review = fake.start_review()  # takes the older ID
         comment = fake.comment(3, body='meanwhile')
-        state = github.GitHubState(after=at(3), seen=(f'comment-{comment.id}',))
+        state = github.GitHubState(
+            after=at(3),
+            seen={f'comment-{comment.id}': at(3)},
+        )
         fake.submit(review, 5, body='done')
 
         events = await _poll_once(fake, state)

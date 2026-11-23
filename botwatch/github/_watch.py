@@ -25,6 +25,12 @@ timestamps don't follow the order in which events become visible, and a poll
 lists them in several calls."""
 
 
+type _Time = Annotated[
+    pydantic.AwareDatetime,
+    pydantic.PlainSerializer(_utils.datetime.to_rfc3339, when_used='json'),
+]
+
+
 class GitHubState(pydantic.BaseModel):
     """How far a GitHub source has got: a time, and the events from then on
     already reported.
@@ -37,16 +43,13 @@ class GitHubState(pydantic.BaseModel):
 
     type: Literal['github'] = 'github'
 
-    after: pydantic.AwareDatetime
+    after: _Time
     """The source reports only events at or after this time, by GitHub's
     clock."""
 
-    seen: tuple[str, ...] = ()
-    """The IDs of the events at or after ``after`` already reported."""
-
-    @pydantic.field_serializer('after', when_used='json')
-    def _serialize_after(self, after: datetime) -> str:
-        return _utils.datetime.to_rfc3339(after)
+    seen: dict[str, _Time] = pydantic.Field(default_factory=dict)
+    """The events at or after ``after`` already reported: each one's ID, and
+    its time."""
 
     def describe(self) -> str:
         """Where the source is up to, for people."""
@@ -129,10 +132,9 @@ def _apply_poll(
     """Folds one poll's events into the state: those not yet reported, oldest
     first, and the state after them.
 
-    ``events`` are every event the poll listed at or after ``state.after``.
     The state moves on to the newest event reported, but no further than
-    ``settled_before``, before which every event is visible, and remembers
-    every listed event from there on.
+    ``settled_before``, before which every event is visible. It remembers
+    every event reported from there on.
     """
     new_events = sorted(
         (
@@ -147,13 +149,18 @@ def _apply_poll(
         if new_events
         else state.after
     )
-    seen = {event.id for event in events if event.time >= after}
-    if after == state.after:
-        seen.update(state.seen)
+    reported = {**state.seen, **{event.id: event.time for event in new_events}}
     return _source.Update(
         events=tuple(new_events),
-        state=GitHubState(after=after, seen=tuple(sorted(seen))),
+        state=GitHubState(
+            after=after,
+            seen={id_: time for id_, time in reported.items() if time >= after},
+        ),
     )
+
+
+def _review_event_id(review: _api.Review) -> str:
+    return f'review-{review.id}'
 
 
 def _comment_to_event(
@@ -180,7 +187,7 @@ def _review_to_event(
     pull: int,
 ) -> ReviewSubmitted:
     return ReviewSubmitted(
-        id=f'review-{review.id}',
+        id=_review_event_id(review),
         time=submitted_at,
         repo=repo,
         pull=pull,
@@ -206,21 +213,23 @@ async def _fetch_events(
     client: _api.GitHubClient,
     repo: str,
     pull: int,
-    after: datetime,
+    state: GitHubState,
 ) -> list[GitHubEvent]:
-    """The comments and submitted reviews at or after ``after``.
+    """The comments and submitted reviews at or after ``state.after``. The
+    diff comments are listed only when a review there is new.
 
     A review is placed by when it was submitted, not by its ID, which it gets
     while still pending.
     """
-    comments = await client.fetch_issue_comments(repo, pull, since=after)
+    comments = await client.fetch_issue_comments(repo, pull, since=state.after)
     submitted = [
         (review, submitted_at)
         for review in await client.fetch_reviews(repo, pull)
-        if (submitted_at := review.submitted_at) is not None and submitted_at >= after
+        if (submitted_at := review.submitted_at) is not None
+        and submitted_at >= state.after
     ]
     review_comments: dict[int, list[_api.ReviewComment]] = {}
-    if submitted:
+    if any(_review_event_id(review) not in state.seen for review, _ in submitted):
         for comment in await client.fetch_review_comments(repo, pull):
             review_comments.setdefault(comment.pull_request_review_id, []).append(
                 comment,
@@ -261,7 +270,7 @@ async def watch(
 
     while True:
         started_at = await client.fetch_time()
-        events = await _fetch_events(client, repo, pull, current.after)
+        events = await _fetch_events(client, repo, pull, current)
         update = _apply_poll(
             current,
             events,
