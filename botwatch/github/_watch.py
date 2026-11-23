@@ -344,8 +344,8 @@ async def _fetch_head_change(
     after: str,
     time: datetime,
 ) -> HeadChanged:
-    """The ``number``\\ th head change, which a push is found by rather than
-    timed by, so it takes ``time``, when the poll saw it."""
+    """The ``number``\\ th head change. A push has no time of its own, so it
+    takes ``time``, when the poll saw it."""
     commit = await client.fetch_commit(repo, after)
     return HeadChanged(
         id=f'head-{number}-{after}',
