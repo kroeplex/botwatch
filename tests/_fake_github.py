@@ -206,6 +206,7 @@ class FakeGitHub:
                 name=name,
                 status='completed' if conclusion is not None else 'in_progress',
                 conclusion=conclusion,
+                completed_at=self.now if conclusion is not None else None,
             ),
         )
 
@@ -216,6 +217,7 @@ class FakeGitHub:
                 status=status,
                 latest_check_runs_count=runs,
                 created_at=self.now,
+                updated_at=self.now,
             ),
         ]
 
@@ -223,7 +225,9 @@ class FakeGitHub:
         """Sets a commit status on the head."""
         statuses = self.commit_statuses.setdefault(self.head, [])
         statuses[:] = [status for status in statuses if status.context != context]
-        statuses.append(_api.Status(context=context, state=state))
+        statuses.append(
+            _api.Status(context=context, state=state, updated_at=self.now),
+        )
 
     def _serve_checks(self, request: httpx.Request) -> httpx.Response:
         """A commit's check runs, check suites or combined status."""

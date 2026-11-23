@@ -91,7 +91,8 @@ class GitHubState(pydantic.BaseModel):
 
     checks: CheckResult | None = None
     """The checks' conclusion when last polled, or ``None`` until the source
-    records it as it starts, which reports nothing."""
+    records it as it starts. A conclusion reached before ``after`` is recorded
+    as seen; a later one is reported by the first poll."""
 
     checks_reports: int = 0
     """How many checks conclusions the source has reported, which numbers each
@@ -287,6 +288,9 @@ class _Verdict:
     failed: tuple[str, ...]
     pending: tuple[str, ...]
 
+    finished_at: datetime | None
+    """When the last check or status to finish did, by GitHub's clock."""
+
 
 def _is_running(suite: _api.CheckSuite, now: datetime) -> bool:
     """Whether a check suite may yet add checks or results: any suite not
@@ -344,15 +348,23 @@ def _conclude(
     )
     running = bool(pending) or any(_is_running(suite, now) for suite in suites)
     failed = tuple(sorted(failures | cancellations))
+    finished_at = max(
+        [
+            *(run.completed_at for run in latest.values() if run.completed_at),
+            *(status.updated_at for status in statuses if status.state != 'pending'),
+            *(suite.updated_at for suite in suites if suite.status == 'completed'),
+        ],
+        default=None,
+    )
     verdict: _Verdict | None
     if failures:
-        verdict = _Verdict('failure', failed, pending)
+        verdict = _Verdict('failure', failed, pending, finished_at)
     elif running or not (runs or statuses):
         verdict = None
     elif cancellations:
-        verdict = _Verdict('cancelled', failed, ())
+        verdict = _Verdict('cancelled', failed, (), finished_at)
     else:
-        verdict = _Verdict('success', (), ())
+        verdict = _Verdict('success', (), (), finished_at)
     return verdict
 
 
@@ -579,6 +591,46 @@ async def _fetch_checks(
     )
 
 
+async def _fetch_start_state(
+    client: _api.GitHubClient,
+    repo: str,
+    pull: int,
+    state: GitHubState | None,
+) -> GitHubState:
+    """The state a source starts from: ``state``, or from now by GitHub's
+    clock, taking the pull request's current head when it has none, and its
+    checks conclusion too, unless that was reached since ``after`` and so is
+    left for the first poll to report."""
+    current = (
+        state if state is not None else GitHubState(after=await client.fetch_time())
+    )
+    head = (
+        current.head
+        if current.head is not None
+        else await client.fetch_head(repo, pull)
+    )
+    if current.checks is None:
+        verdict, checks = await _fetch_checks(
+            client,
+            repo,
+            head,
+            await client.fetch_time(),
+        )
+        is_new = (
+            verdict is not None
+            and verdict.finished_at is not None
+            and verdict.finished_at >= current.after
+        )
+        current = current.model_copy(
+            update={
+                'checks': (
+                    CheckResult(head=head, conclusion=None) if is_new else checks
+                ),
+            },
+        )
+    return current.model_copy(update={'head': head})
+
+
 async def watch(
     client: _api.GitHubClient,
     repo: str,
@@ -590,24 +642,11 @@ async def watch(
     """Watches a pull request's comments, reviews, head, state and checks,
     forever.
 
-    Starts from ``state``, or when it's ``None`` from now by GitHub's clock,
-    taking the pull request's current head and checks conclusion when the
-    state has none, and first yields that starting state as a checkpoint.
-    Then it polls every ``poll_interval`` and yields an update for each poll
-    that finds new events.
+    Starts from :func:`_fetch_start_state`'s state, which is ``state`` or now,
+    and first yields it as a checkpoint. Then it polls every ``poll_interval``
+    and yields an update for each poll that finds new events.
     """
-    current = (
-        state if state is not None else GitHubState(after=await client.fetch_time())
-    )
-    head = (
-        current.head
-        if current.head is not None
-        else await client.fetch_head(repo, pull)
-    )
-    if current.checks is None:
-        _, checks = await _fetch_checks(client, repo, head, await client.fetch_time())
-        current = current.model_copy(update={'checks': checks})
-    current = current.model_copy(update={'head': head})
+    current = await _fetch_start_state(client, repo, pull, state)
     yield _source.Update(events=(), state=current)
 
     url = f'https://github.com/{repo}/pull/{pull}'

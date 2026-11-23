@@ -158,6 +158,8 @@ class CheckRun(pydantic.BaseModel):
     """Once completed: ``success``, ``failure``, ``cancelled``, ``skipped``,
     ``neutral``, ``timed_out`` or ``action_required``, among others."""
 
+    completed_at: datetime | None = None
+
 
 class _App(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(frozen=True)
@@ -182,6 +184,7 @@ class CheckSuite(pydantic.BaseModel):
 
     latest_check_runs_count: int
     created_at: datetime
+    updated_at: datetime
     app: _App | None = None
 
 
@@ -193,6 +196,8 @@ class Status(pydantic.BaseModel):
     context: str
     state: str
     """``pending``, ``success``, ``failure`` or ``error``."""
+
+    updated_at: datetime
 
 
 class _CheckRunsPage(pydantic.BaseModel):
