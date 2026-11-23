@@ -8,8 +8,12 @@ dependencies = [
     'httpx (>=0.28,<1)',
     'pydantic (>=2,<3)',
     'pydantic-settings (>=2,<3)',
+    'pyyaml (>=6,<7)',
     'turbopipes @ git+https://github.com/kkroening/turbopipes.git@9a78e18c4c1c8b8189039bc0a1e93af1c3a05d3f',
 ]
+
+[project.scripts]
+botwatch = 'botwatch._cli:main'
 
 [tool.poetry.group.dev.dependencies]
 black = '*'
@@ -21,6 +25,7 @@ pytest-asyncio = '*'
 pytest-mock = '*'
 pytest-randomly = '*'
 pytest-timeout = '*'
+types-pyyaml = '*'
 
 [build-system]
 requires = ['poetry-core>=2']

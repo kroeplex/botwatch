@@ -1,6 +1,7 @@
 """The source contract: what every source yields."""
 
 import pydantic
+from . import _utils
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,6 +25,10 @@ class Event(pydantic.BaseModel):
 
     time: datetime
     """When it happened at the source."""
+
+    @pydantic.field_serializer('time')
+    def _serialize_time(self, time: datetime) -> str:
+        return _utils.datetime.to_rfc3339(time)
 
 
 @dataclass(frozen=True)
