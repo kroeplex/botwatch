@@ -100,9 +100,24 @@ is listening.
   there. That position comes from Slack rather than the local clock, so clock
   skew can't skip or repeat a message. An empty conversation starts at the
   beginning.
-- **Polling.** Each poll fetches the messages after `after`, following
-  pagination. A pure step, `_apply_poll`, turns them into events and the next
-  state. A poll that finds nothing yields nothing.
+- **Polling.** Each poll gets the messages after `after`, and a pure step,
+  `_apply_poll`, turns them into events and the next state. A poll that finds
+  nothing yields nothing.
+- **Sharing a conversation.** Every source on one conversation reads the same
+  `conversations.history` page, the conversation's newest 200 top-level
+  messages. The client caches it for half a poll interval, so sources polling
+  in step share one call.
+  - **A thread** looks up its first message in that page. Slack marks it with
+    `latest_reply`, and when that isn't after the thread's `after`, the thread
+    has nothing new and makes no call. Otherwise, or when the first message is
+    older than the page, it calls `conversations.replies`.
+  - **The top level** reads the page directly whenever the page reaches back to
+    `after`, and otherwise calls `conversations.history` from `after`,
+    following pagination.
+
+  Idle threads, the common case, therefore cost nothing beyond the shared
+  call. All of this stays inside the client and `_watch.py`: each source is
+  still its own generator.
 - **The client** (`slack/_api.py`) parses Slack's responses into private
   models. It retries rate limiting (honouring `Retry-After`), server errors and
   network errors without limit, logging each retry to stderr. A Slack error
