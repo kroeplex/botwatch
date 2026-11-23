@@ -59,7 +59,8 @@ a hosted service. botwatch is a small, one-shot command-line tool.
   rather than one each. Then it exits. Your loop decides whether to run it
   again.
 - **The state file is its memory.** It records how far each source has got,
-  and is written atomically on exit. Without one, every run starts from now.
+  and is written atomically on exit. Without one, every run starts each source
+  from its `start_after`, or else from now.
 - **At-least-once.** If a run is killed, the next one repeats what it had
   already printed rather than skipping anything. Dedupe on `(source, id)`.
 - **Failures don't wake you early.** A source that breaks prints a
@@ -105,9 +106,10 @@ when the command exits, and costs nothing while it waits.
   with `botwatch defaults`. Otherwise every reply it sends wakes it again.
 - **Let it manage its own watch set.** Have the agent run `botwatch add`,
   `remove` and `show --json` rather than edit the YAML: they validate as they
-  go. When it adds a source it has already read, such as a thread it just
-  replied in, pass `--start-after` with the last thing it saw, so nothing
-  posted before the next run is missed.
+  go. When it adds a source, pass `--start-after` with the newest `ts` (or, for
+  GitHub, time) it has *read* there, not that of its own reply, which can land
+  after messages it hasn't seen. For a thread or pull request it just created,
+  pass the thread's `ts` or the pull request's creation time.
 
 ## Configuration
 
@@ -125,6 +127,7 @@ sources:
   - type: slack
     conversation: C0123456789      # channel, private channel, DM or group DM
     thread_ts: '1785600000.000200' # optional: watch just this thread
+    start_after: '1785600000.000300' # optional: where it starts until it has saved state
     poll_interval: 30s             # optional: else the type's default, or 30s
     exclude:                       # optional: messages to skip
       - user: U0123BOT             # every field in a rule must match
@@ -132,14 +135,15 @@ sources:
   - type: github
     repo: octo-org/octo-repo       # a pull request's comments and reviews
     pull: 26
+    start_after: '2026-08-01T16:00:00Z' # optional: likewise, a time
     exclude:
       - user: octo-bot             # a login; text works here too
 ```
 
 Both IDs are in the link to a thread's first message:
 `…/archives/C0123456789/p1785600000000200` is conversation `C0123456789`,
-`thread_ts` `1785600000.000200`. Quote `thread_ts`, or YAML reads it as a
-number.
+`thread_ts` `1785600000.000200`. Quote `thread_ts` and a Slack `start_after`,
+or YAML reads them as numbers.
 
 Each source watches one thing: a conversation's top level, or one thread.
 Slack's history of a conversation doesn't include thread replies, so watch each

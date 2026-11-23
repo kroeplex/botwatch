@@ -372,31 +372,37 @@ class Test_main__add:
         )
 
     @pytest.mark.parametrize(
-        ('arguments', 'start_after'),
+        ('arguments', 'position', 'written'),
         [
-            (['slack', 'C1'], "'1785600000.000300'"),
-            (['github', 'o/r#1'], "'2026-08-01T16:00:00.000Z'"),
+            (['slack', 'C1'], '1785600000.000300', "'1785600000.000300'"),
+            (
+                ['github', 'o/r#1'],
+                '2026-08-01T18:00:00+02:00',
+                "'2026-08-01T16:00:00.000Z'",
+            ),
         ],
     )
     def test__sets_a_start_position(
         self,
         arguments: list[str],
-        start_after: str,
+        position: str,
+        written: str,
         tmp_path: Path,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         path = tmp_path / 'watch.yaml'
-        position = start_after.strip("'").replace('.000Z', 'Z')
 
         _invoke(capsys, 'add', '--config', path, *arguments, '--start-after', position)
 
-        assert f'  start_after: {start_after}\n' in path.read_text()
+        assert f'  start_after: {written}\n' in path.read_text()
 
     @pytest.mark.parametrize(
         'arguments',
         [
             ['slack', 'C1', '--start-after', '2026-08-01T16:00:00Z'],
             ['github', 'o/r#1', '--start-after', 'yesterday'],
+            ['github', 'o/r#1', '--start-after', '20260801'],
+            ['github', 'o/r#1', '--start-after', '1785600000.000300'],
         ],
     )
     def test__fails_on_a_bad_start_position(

@@ -111,14 +111,16 @@ class SlackSourceConfig(pydantic.BaseModel):
 
     start_after: slack.SlackTs | None = None
     """Where the source starts while it has no saved state: after this ``ts``,
-    such as the last message the caller has seen. Without it, the source starts
-    from the run that first watches it."""
+    such as that of the newest message the caller has read there, not of its
+    own reply. Without it, the source starts from the run that first watches
+    it."""
 
     @property
     def key(self) -> SourceKey:
         thread = f'/{self.thread_ts}' if self.thread_ts is not None else ''
         return SourceKey(f'slack:{self.conversation}{thread}')
 
+    @property
     def start_state(self) -> slack.SlackState | None:
         """The state it starts from while it has no saved state, if not now."""
         return (
@@ -140,7 +142,7 @@ class SlackSourceConfig(pydantic.BaseModel):
                 clients.slack,
                 self.conversation,
                 state=(
-                    state if isinstance(state, slack.SlackState) else self.start_state()
+                    state if isinstance(state, slack.SlackState) else self.start_state
                 ),
                 thread_ts=self.thread_ts,
                 poll_interval=self.poll_interval,
@@ -172,17 +174,21 @@ class GitHubSourceConfig(pydantic.BaseModel):
 
     start_after: github.Time | None = None
     """Where the source starts while it has no saved state: from this time on,
-    such as that of the last event the caller has seen. Without it, the source
-    starts from the run that first watches it."""
+    such as that of the newest event the caller has read there, not of its own
+    comment. Events in that same second are reported again. Without it, the
+    source starts from the run that first watches it."""
 
     @property
     def key(self) -> SourceKey:
         return SourceKey(f'github:{self.repo}#{self.pull}')
 
+    @property
     def start_state(self) -> github.GitHubState | None:
-        """The state it starts from while it has no saved state, if not now."""
+        """The state it starts from while it has no saved state, if not now:
+        from the start of ``start_after``'s second, since GitHub's times are
+        whole seconds."""
         return (
-            github.GitHubState(after=self.start_after)
+            github.GitHubState(after=self.start_after.replace(microsecond=0))
             if self.start_after is not None
             else None
         )
@@ -201,9 +207,7 @@ class GitHubSourceConfig(pydantic.BaseModel):
                 self.repo,
                 self.pull,
                 state=(
-                    state
-                    if isinstance(state, github.GitHubState)
-                    else self.start_state()
+                    state if isinstance(state, github.GitHubState) else self.start_state
                 ),
                 poll_interval=self.poll_interval,
             ),

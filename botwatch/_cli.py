@@ -107,7 +107,8 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help=(
             'where to keep how far each source got, between runs; without it,'
-            ' every run starts from now'
+            ' every run starts each source from its start_after, or else from'
+            ' now'
         ),
     )
 
@@ -140,10 +141,10 @@ def _build_parser() -> argparse.ArgumentParser:
         '--start-after',
         metavar='POSITION',
         help=(
-            'where it starts until it has saved state, such as the last thing'
-            ' already seen: a `ts` for slack, a time such as'
-            ' 2026-08-01T16:00:00Z for github (default: the run that first'
-            ' watches it)'
+            'where it starts until it has saved state: the newest `ts` (slack)'
+            ' or time such as 2026-08-01T16:00:00Z (github) already read there,'
+            ' not that of your own reply (default: the run that first watches'
+            ' it)'
         ),
     )
     _add_setting_arguments(add)
@@ -469,7 +470,7 @@ def _print_table(shown: _Shown, state_path: Path | None) -> None:
     for source in shown.sources:
         interval = _config.format_duration(source.config.poll_interval)
         position = (
-            f'  {_describe_position(source.state, source.config.start_state())}'
+            f'  {_describe_position(source.state, source.config.start_state)}'
             if state_path is not None
             else ''
         )

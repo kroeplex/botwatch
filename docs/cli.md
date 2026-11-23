@@ -30,7 +30,7 @@ stdout as JSON lines, saves the state, and exits.
 | Option | Meaning |
 | --- | --- |
 | `--config CONFIG` | A YAML (or JSON) file naming the sources to watch. See [Configuration](../README.md#configuration). |
-| `--state STATE` | Where to keep how far each source got between runs. It's created if missing. Without it, every run starts from now. |
+| `--state STATE` | Where to keep how far each source got between runs. It's created if missing. Without it, every run starts each source from its `start_after`, or else from now. |
 
 | Environment | Meaning |
 | --- | --- |
@@ -68,7 +68,7 @@ or a GitHub pull request's comments and reviews. Prints `added`, `updated` or
 | `CONVERSATION` | The conversation ID, such as `C0123456789`. |
 | `PULL_REQUEST` | `OWNER/REPO#NUMBER`, such as `octo-org/octo-repo#26`, or the pull request's URL. |
 | `--thread TS` | Slack only: the `ts` of the thread's first message, such as `1785600000.000200`. |
-| `--start-after POSITION` | Where the source starts until a run has saved its state, such as the last thing the caller has already seen: a `ts` for Slack, or a time such as `2026-08-01T16:00:00Z` for GitHub. Without it, the source starts from the run that first watches it. |
+| `--start-after POSITION` | Where the source starts until a run has saved its state: the newest `ts` (Slack) or time such as `2026-08-01T16:00:00Z` (GitHub) the caller has read there, not that of its own reply, which can land after messages it hasn't seen. GitHub events in that second are reported again. Without it, the source starts from the run that first watches it. |
 | `--poll-interval DURATION` | How often to poll, such as `15s`. Unset, it falls back to the type's default (see `defaults`), or else `30s` for Slack, `1m` for GitHub. |
 | `--exclude RULE` | Events to skip, as a YAML mapping, such as `'{user: U0123BOT}'` or `"{text: '^\[op 1\]'}"`. Repeat it for more rules. See [Configuration](../README.md#configuration). |
 
@@ -136,7 +136,7 @@ With `--json` it prints one JSON object instead:
   "sources": [
     {
       "key": "slack:C0123456789",
-      "config": {"type": "slack", "conversation": "C0123456789", "thread_ts": null, "poll_interval": "30s", "exclude": [{"user": "U0123BOT", "bot_id": null, "username": null, "text": null}]},
+      "config": {"type": "slack", "conversation": "C0123456789", "thread_ts": null, "poll_interval": "30s", "exclude": [{"user": "U0123BOT", "bot_id": null, "username": null, "text": null}], "start_after": null},
       "state": {"type": "slack", "after": "1785600123.000100"}
     }
   ],
