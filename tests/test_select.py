@@ -137,18 +137,6 @@ class Test_select:
         assert elapsed < _LINGER.total_seconds()
         assert sorted(closed) == ['a', 'b']
 
-    async def test__waits_for_every_source_to_start(self) -> None:
-        closed: list[str] = []
-        sources = {
-            'fast': _play([(0, _create_update(1, 'f1'))], closed, 'fast'),
-            'slow': _play([(0.2, _create_update(0))], closed, 'slow'),
-        }
-
-        received, elapsed = await _run(sources, linger=timedelta(0))
-
-        assert [key for key, _ in received] == ['fast', 'slow']
-        assert 0.2 <= elapsed < _QUIET.total_seconds()
-
     async def test__failures_never_open_the_window(self) -> None:
         closed: list[str] = []
         sources = {

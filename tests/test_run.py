@@ -28,9 +28,9 @@ _THREAD = _config.SlackSourceConfig(
 )
 
 
-_NO_KEY = _config.SourceKey('slack:C0NO')
+_FAILING_KEY = _config.SourceKey('slack:C0NO')
 
-_NO_STATE = slack.SlackState(after=_PARENT)
+_FAILING_STATE = slack.SlackState(after=_PARENT)
 """The saved state of a source that fails, which it must keep."""
 
 
@@ -65,7 +65,7 @@ async def test_run_once() -> None:
         poster = asyncio.create_task(post_later())
         state = await _run.run_once(
             config,
-            _state.StateFile(sources={_NO_KEY: _NO_STATE}),
+            _state.StateFile(sources={_FAILING_KEY: _FAILING_STATE}),
             slack_client=client,
             out=out,
         )
@@ -91,7 +91,7 @@ async def test_run_once() -> None:
     }
     assert state == _state.StateFile(
         sources={
-            _NO_KEY: _NO_STATE,
+            _FAILING_KEY: _FAILING_STATE,
             _TOP.key: slack.SlackState(after=_create_ts(2)),
         },
     )

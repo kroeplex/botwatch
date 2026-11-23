@@ -2,13 +2,14 @@
 
 Design spec: **where a run ends never changes what is emitted.** For every
 source whose state has been saved, given the same observations, successive runs
-emit the same sequence of its events (``botwatch.*`` events aside) however each
-run ends, a crash included. Only a crash may repeat events, and none skips one.
+emit the same sequence of its events once repeats are dropped by ``(source,
+id)``, ``botwatch.*`` events aside, however each run ends, a crash included.
+Only a crash may repeat events, and none skips one.
 
-A new source's state is first saved when a run that started it ends normally; a
-run never departs before every source has started. The gap between runs
-observes nothing, so several changes inside it can surface as one, as with a
-slower poll.
+A new source's state is first saved by a run that ends normally after the
+source has delivered its first update; until then, each run starts it from that
+run's own now. The gap between runs observes nothing, so several changes inside
+it can surface as one, as with a slower poll.
 
 Checked by ``test_run_once__where_a_run_ends_never_changes_what_is_emitted``.
 """

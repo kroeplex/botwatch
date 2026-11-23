@@ -79,12 +79,9 @@ def select[KeyT, StateT, EventT: _source.Event](
     task.
 
     Waits up to ``quiet_timeout`` for an update with events, then exactly
-    ``linger`` more, and then closes every source. The linger counts from the
-    moment there has been an update with events and every source has delivered
-    its first update or failed, so a run never departs before each source has
-    a starting position. Checkpoints and failures alone never open that window.
-    If every source ends or fails before it opens, the run still lasts the
-    quiet timeout.
+    ``linger`` more, counted from that update, and then closes every source.
+    Checkpoints and failures never open that window. If every source ends or
+    fails before it opens, the run still lasts the quiet timeout.
 
     Example::
 
@@ -107,21 +104,9 @@ def select[KeyT, StateT, EventT: _source.Event](
                 update = await task
                 ...
     """
-    started: set[KeyT] = set()
-    has_seen_events = False
-
-    def opens(
-        item: tuple[KeyT, asyncio.Task[_source.Update[StateT, EventT]]],
-    ) -> bool:
-        nonlocal has_seen_events
-        key, _task = item
-        started.add(key)
-        has_seen_events = has_seen_events or _has_events(item)
-        return has_seen_events and started >= sources.keys()
-
     return _linger(
         turbopipes.aselect(sources),
         quiet_timeout=quiet_timeout,
         linger=linger,
-        opens=opens,
+        opens=_has_events,
     )
