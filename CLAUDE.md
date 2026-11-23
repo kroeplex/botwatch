@@ -42,8 +42,8 @@ The repo is currently **design-stage**: no implementation yet.
 - **Language: Python**, chosen for the paved path across Kroeplex rather than
   for performance. Startup latency is dwarfed by the time spent waiting on the
   sources being watched, and a port to a compiled language stays open. Design
-  documents should stay **implementation-agnostic** — pseudo-code for
-  illustration, not Python-specific contracts.
+  documents may name the Python constructs the design rests on, such as async
+  generators and turbopipes. Beyond those, they describe behaviour, not code.
 - **A *source* is one thing being watched**: a Slack conversation's top level,
   or one Slack thread. botwatch only reads from it. Don't use "channel" for a
   source; say "Slack channel" when you mean one.
