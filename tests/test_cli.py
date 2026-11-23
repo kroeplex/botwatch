@@ -1,4 +1,5 @@
 import asyncio
+import botwatch
 import json
 import pytest
 import re
@@ -225,6 +226,14 @@ def test_main__keeps_the_old_state_when_the_run_fails(
         _cli.main(['--config', str(config_path), '--state', str(state_path)])
 
     assert _state.StateFile.load(state_path) == previous
+
+
+def test_main__prints_the_version(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exited:
+        _cli.main(['--version'])
+
+    assert exited.value.code == 0
+    assert capsys.readouterr().out == f'botwatch {botwatch.__version__}\n'
 
 
 def test_main__suggests_a_command_for_a_typo(

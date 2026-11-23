@@ -9,7 +9,7 @@ $ botwatch show --config CONFIG [--state STATE] [--json]
 ```
 
 `run` is the default command, so `botwatch --config CONFIG` runs. Every command
-takes `-h` for its own help.
+takes `-h` for its own help, and `botwatch --version` prints the version.
 
 **Exit status**, for every command:
 - **0:** success. For `run`, a normal run, whether or not anything happened.

@@ -12,6 +12,7 @@ import pydantic
 import re
 import sys
 import yaml
+from . import __version__
 from . import _config
 from . import _run
 from . import _state
@@ -88,6 +89,11 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
         epilog=_TOKEN_EPILOG,
         suggest_on_error=True,
+    )
+    parser.add_argument(
+        '--version',
+        action='version',
+        version=f'%(prog)s {__version__}',
     )
     commands = parser.add_subparsers(dest='command', required=True)
 
@@ -197,9 +203,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     arguments = list(sys.argv[1:] if argv is None else argv)
-    # `run` takes only options, so a leading option other than help means `run`.
+    # `run` takes only options, so a leading option of its own means `run`.
     is_run = bool(arguments) and (
-        arguments[0].startswith('-') and arguments[0] not in ('-h', '--help')
+        arguments[0].startswith('-')
+        and arguments[0] not in ('-h', '--help', '--version')
     )
     return _build_parser().parse_args(['run', *arguments] if is_run else arguments)
 
