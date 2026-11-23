@@ -9,6 +9,18 @@
 
 ## [Unreleased]
 
+## <span id="0-3-0" /> [0.3.0](https://github.com/kroeplex/botwatch/compare/0.2.1...0.3.0) - 2026-11-23
+
+### Changes
+
+* Wake when a watched pull request's checks conclude ([#36](https://github.com/kroeplex/botwatch/pull/36))
+
+### Upgrade notes
+
+A GitHub source now also reads its head commit's checks and commit statuses. A
+fine-grained token or GitHub App needs read access to checks and commit
+statuses as well as pull requests, or the source fails on every run.
+
 ## <span id="0-2-1" /> [0.2.1](https://github.com/kroeplex/botwatch/compare/0.2.0...0.2.1) - 2026-11-23
 
 ### Changes
