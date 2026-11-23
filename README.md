@@ -124,14 +124,13 @@ sources:
   - type: slack
     conversation: C0123456789      # channel, private channel, DM or group DM
     thread_ts: '1785600000.000200' # optional: watch just this thread
-    poll_interval: 30s             # default 30s
+    poll_interval: 30s             # optional: else the type's default, or 30s
     exclude:                       # optional: messages to skip
       - user: U0123BOT             # every field in a rule must match
         text: '^\[op 1\]'          # a regex over Slack's raw message text
   - type: github
     repo: octo-org/octo-repo       # a pull request's comments and reviews
     pull: 26
-    poll_interval: 1m              # default 1m
     exclude:
       - user: octo-bot             # a login; text works here too
 ```

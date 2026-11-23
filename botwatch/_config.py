@@ -18,6 +18,7 @@ from typing import Annotated
 from typing import Literal
 from typing import NewType
 from typing import Self
+from typing import assert_never
 
 SourceKey = NewType('SourceKey', str)
 """A source's identity across runs, derived from what it watches, such as
@@ -197,9 +198,12 @@ class TypeDefaults[RuleT: pydantic.BaseModel](pydantic.BaseModel):
     caller's own posts."""
 
 
-# Named outside `Defaults`, whose fields would shadow the modules.
-_SlackDefaults = TypeDefaults[slack.ExcludeRule]
-_GitHubDefaults = TypeDefaults[github.ExcludeRule]
+class SlackDefaults(TypeDefaults[slack.ExcludeRule]):
+    """Settings for every Slack source."""
+
+
+class GitHubDefaults(TypeDefaults[github.ExcludeRule]):
+    """Settings for every GitHub source."""
 
 
 class Defaults(pydantic.BaseModel):
@@ -207,9 +211,9 @@ class Defaults(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(extra='forbid', frozen=True)
 
-    slack: _SlackDefaults = _SlackDefaults()
+    slack: SlackDefaults = SlackDefaults()
 
-    github: _GitHubDefaults = _GitHubDefaults()
+    github: GitHubDefaults = GitHubDefaults()
 
 
 class Config(pydantic.BaseModel):
@@ -247,26 +251,30 @@ class Config(pydantic.BaseModel):
         return sources
 
     def resolve(self, source: SourceConfig) -> SourceConfig:
-        """``source`` as it runs, with its type's defaults applied: their
-        exclude rules ahead of its own, and their poll interval unless it sets
-        one."""
-        defaults = (
-            self.defaults.slack
-            if isinstance(source, SlackSourceConfig)
-            else self.defaults.github
-        )
-        poll_interval = (
-            defaults.poll_interval
-            if defaults.poll_interval is not None
-            and 'poll_interval' not in source.model_fields_set
-            else source.poll_interval
-        )
+        """``source``, as configured, as it runs: with its type's defaults
+        applied, their exclude rules ahead of its own and their poll interval
+        unless it sets one."""
+        defaults: SlackDefaults | GitHubDefaults
+        match source:
+            case SlackSourceConfig():
+                defaults = self.defaults.slack
+            case GitHubSourceConfig():
+                defaults = self.defaults.github
+            case _:
+                assert_never(source)
+        if 'poll_interval' in source.model_fields_set or defaults.poll_interval is None:
+            poll_interval = source.poll_interval
+        else:
+            poll_interval = defaults.poll_interval
         return source.model_copy(
             update={
                 'poll_interval': poll_interval,
                 'exclude': (*defaults.exclude, *source.exclude),
             },
         )
+
+    def with_defaults(self, defaults: Defaults) -> Self:
+        return self.model_copy(update={'defaults': defaults})
 
     def find(self, key: SourceKey) -> SourceConfig | None:
         return next((source for source in self.sources if source.key == key), None)

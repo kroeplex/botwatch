@@ -3,7 +3,7 @@
 ```console
 $ botwatch [run] --config CONFIG [--state STATE]
 $ botwatch add --config CONFIG slack CONVERSATION [--thread TS] [--poll-interval DURATION] [--exclude RULE]…
-$ botwatch defaults --config CONFIG TYPE [--poll-interval DURATION] [--exclude RULE]…
+$ botwatch defaults --config CONFIG TYPE [--reset] [--poll-interval DURATION] [--exclude RULE]…
 $ botwatch remove --config CONFIG KEY…
 $ botwatch show --config CONFIG [--state STATE] [--json]
 ```
@@ -67,7 +67,7 @@ or a GitHub pull request's comments and reviews. Prints `added`, `updated` or
 | `CONVERSATION` | The conversation ID, such as `C0123456789`. |
 | `PULL_REQUEST` | `OWNER/REPO#NUMBER`, such as `octo-org/octo-repo#26`, or the pull request's URL. |
 | `--thread TS` | Slack only: the `ts` of the thread's first message, such as `1785600000.000200`. |
-| `--poll-interval DURATION` | How often to poll, such as `15s`. Default `30s` for Slack, `1m` for GitHub. |
+| `--poll-interval DURATION` | How often to poll, such as `15s`. Unset, it falls back to the type's default (see `defaults`), or else `30s` for Slack, `1m` for GitHub. |
 | `--exclude RULE` | Events to skip, as a YAML mapping, such as `'{user: U0123BOT}'` or `"{text: '^\[op 1\]'}"`. Repeat it for more rules. See [Configuration](../README.md#configuration). |
 
 For a source that's already watched, the options given replace its settings
@@ -86,7 +86,8 @@ Sets the defaults for every source of a type, `slack` or `github`, and prints
 `updated` or `unchanged`. A default poll interval applies to each source that
 doesn't set its own, and default exclude rules apply ahead of each source's
 own. As with `add`, the options given replace those settings and the rest are
-kept, and the config is created if it doesn't exist.
+kept, and the config is created if it doesn't exist. `--reset` drops the type's
+defaults first, so `--reset` alone clears them.
 
 ## `remove`
 
@@ -114,11 +115,11 @@ In state.yaml but no longer configured, dropped on the next run:
   slack:C0OLD
 ```
 
-Validates the config, and the state file if given, and lists each source with
-its poll interval and, given the state, how far it has got. Each source's
-settings are shown as it runs, with its type's defaults applied. It also lists state
-entries for sources no longer configured. A state file that doesn't exist yet
-is noted on stderr.
+Validates the config, and the state file if given, and lists the defaults set,
+then each source with the poll interval it runs at, its type's defaults
+applied, and, given the state, how far it has got. It also lists state entries
+for sources no longer configured. A state file that doesn't exist yet is noted
+on stderr.
 
 With `--json` it prints one JSON object instead:
 
@@ -126,10 +127,14 @@ With `--json` it prints one JSON object instead:
 {
   "quiet_timeout": "55m",
   "linger": "5s",
+  "defaults": {
+    "slack": {"poll_interval": null, "exclude": [{"user": "U0123BOT", "bot_id": null, "username": null, "text": null}]},
+    "github": {"poll_interval": null, "exclude": []}
+  },
   "sources": [
     {
       "key": "slack:C0123456789",
-      "config": {"type": "slack", "conversation": "C0123456789", "thread_ts": null, "poll_interval": "30s", "exclude": []},
+      "config": {"type": "slack", "conversation": "C0123456789", "thread_ts": null, "poll_interval": "30s", "exclude": [{"user": "U0123BOT", "bot_id": null, "username": null, "text": null}]},
       "state": {"type": "slack", "after": "1785600123.000100"}
     }
   ],
@@ -137,5 +142,6 @@ With `--json` it prints one JSON object instead:
 }
 ```
 
-`state` is `null` for a source with no saved state, or when no `--state` is
-given.
+A source's `config` is as it runs, so its `exclude` leads with its type's
+default rules; don't repeat those in `add --exclude`. `state` is `null` for a
+source with no saved state, or when no `--state` is given.

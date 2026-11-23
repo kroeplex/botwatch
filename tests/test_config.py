@@ -166,6 +166,12 @@ def test_Config__save__reads_back_unchanged(name: str, tmp_path: Path) -> None:
     path = tmp_path / name
     config = _config.Config(
         quiet_timeout=timedelta(minutes=55),
+        defaults=_config.Defaults(
+            github=_config.GitHubDefaults(
+                poll_interval=timedelta(milliseconds=1500),
+                exclude=(github.ExcludeRule(text=re.compile('^🤖')),),
+            ),
+        ),
         sources=(
             _slack(
                 'C1',
@@ -187,7 +193,7 @@ def test_Config__save__reads_back_unchanged(name: str, tmp_path: Path) -> None:
 
 
 _DEFAULTS = _config.Defaults(
-    slack=_config.TypeDefaults[slack.ExcludeRule](
+    slack=_config.SlackDefaults(
         poll_interval=timedelta(seconds=15),
         exclude=(slack.ExcludeRule(user='U0BOT'),),
     ),
@@ -217,6 +223,26 @@ def test_Config__resolve__keeps_the_sources_own_settings() -> None:
     )
 
 
+def test_Config__resolve__applies_each_type_its_own_defaults() -> None:
+    github_defaults = _config.GitHubDefaults(
+        poll_interval=timedelta(minutes=5),
+        exclude=(github.ExcludeRule(user='octo-bot'),),
+    )
+    pull_request = _config.GitHubSourceConfig(type='github', repo='o/r', pull=1)
+    config = _config.Config(
+        defaults=_DEFAULTS.model_copy(update={'github': github_defaults}),
+        sources=(_slack('C1'), pull_request),
+    )
+
+    resolved_slack = config.resolve(config.sources[0])
+    resolved_github = config.resolve(pull_request)
+
+    assert resolved_slack.exclude == (slack.ExcludeRule(user='U0BOT'),)
+    assert resolved_slack.poll_interval == timedelta(seconds=15)
+    assert resolved_github.exclude == (github.ExcludeRule(user='octo-bot'),)
+    assert resolved_github.poll_interval == timedelta(minutes=5)
+
+
 def test_Config__resolve__without_defaults() -> None:
     source = _config.GitHubSourceConfig(type='github', repo='o/r', pull=1)
 
@@ -226,7 +252,7 @@ def test_Config__resolve__without_defaults() -> None:
 def test_Config__to_text__writes_just_the_defaults_given() -> None:
     config = _config.Config(
         defaults=_config.Defaults(
-            github=_config.TypeDefaults[github.ExcludeRule](
+            github=_config.GitHubDefaults(
                 exclude=(github.ExcludeRule(user='octo-bot'),),
             ),
         ),

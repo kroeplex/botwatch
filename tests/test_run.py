@@ -310,7 +310,7 @@ _EXCLUDING_ME = (slack.ExcludeRule(user='U0ME'),)
             quiet_timeout=timedelta(seconds=0.2),
             linger=timedelta(0),
             defaults=_config.Defaults(
-                slack=_config.TypeDefaults[slack.ExcludeRule](exclude=_EXCLUDING_ME),
+                slack=_config.SlackDefaults(exclude=_EXCLUDING_ME),
             ),
             sources=(_TOP,),
         ),

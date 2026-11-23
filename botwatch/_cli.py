@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import fcntl
 import io
+import json
 import logging
 import os
 import pydantic
@@ -62,7 +63,7 @@ def _add_setting_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         '--poll-interval',
         metavar='DURATION',
-        help='how often to poll, e.g. 15s (default 30s for slack, 1m for github)',
+        help='how often to poll, e.g. 15s (built in: 30s for slack, 1m for github)',
     )
     parser.add_argument(
         '--exclude',
@@ -117,7 +118,8 @@ def _build_parser() -> argparse.ArgumentParser:
             'Watch a Slack conversation or one of its threads, or a GitHub pull'
             " request's comments and reviews. For a source already watched, the"
             ' options given replace its settings, and the rest are kept;'
-            ' `--exclude` replaces the whole list.'
+            ' `--exclude` replaces the whole list. Settings a source leaves'
+            " unset fall back to its type's defaults (see `botwatch defaults`)."
         ),
     )
     _add_config_argument(add)
@@ -138,7 +140,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     defaults = commands.add_parser(
         'defaults',
-        help='set what every source of a type takes',
+        help='set the settings every source of a type falls back on',
         description=(
             'Set the defaults for every source of a type: its poll interval,'
             ' unless a source sets its own, and exclude rules applied ahead of'
@@ -149,6 +151,11 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_config_argument(defaults)
     defaults.add_argument(
         'type', choices=['slack', 'github'], help='the kind of source'
+    )
+    defaults.add_argument(
+        '--reset',
+        action='store_true',
+        help="drop the type's defaults before applying the options given",
     )
     _add_setting_arguments(defaults)
 
@@ -305,6 +312,12 @@ def _describe_target(args: argparse.Namespace) -> dict[str, object]:
     return target
 
 
+def _written(model: pydantic.BaseModel) -> dict[str, object]:
+    """What a config writes for ``model``: the settings that were given, even
+    those equal to a default."""
+    return model.model_dump(mode='json', exclude_unset=True)
+
+
 def _parse_settings(args: argparse.Namespace) -> dict[str, object]:
     """The settings ``--poll-interval`` and ``--exclude`` give. Raises
     :class:`yaml.YAMLError` for a rule that isn't YAML."""
@@ -341,7 +354,7 @@ def _add_command(args: argparse.Namespace) -> None:
         config = _load_config(args.config) if args.config.exists() else _config.Config()
         source = _parse_source(args, config)
         existing = config.find(source.key)
-        if existing == source:
+        if existing is not None and _written(existing) == _written(source):
             status = 'unchanged'
         else:
             status = 'updated' if existing is not None else 'added'
@@ -358,23 +371,19 @@ def _defaults_command(args: argparse.Namespace) -> None:
         try:
             updated = type(existing).model_validate(
                 {
-                    **existing.model_dump(mode='json', exclude_unset=True),
+                    **({} if args.reset else _written(existing)),
                     **_parse_settings(args),
                 },
             )
         except (ValueError, yaml.YAMLError) as error:
             _fail(f'bad defaults: {error}')
-        if updated == existing:
+        if _written(updated) == _written(existing):
             status = 'unchanged'
         else:
             status = 'updated'
             _save_config(
-                config.model_copy(
-                    update={
-                        'defaults': config.defaults.model_copy(
-                            update={args.type: updated},
-                        ),
-                    },
+                config.with_defaults(
+                    config.defaults.model_copy(update={args.type: updated}),
                 ),
                 args.config,
             )
@@ -416,6 +425,8 @@ class _Shown(pydantic.BaseModel):
 
     linger: _config.Duration
 
+    defaults: _config.Defaults
+
     sources: tuple[_ShownSource, ...]
 
     unconfigured_state: tuple[_config.SourceKey, ...]
@@ -426,6 +437,13 @@ def _print_table(shown: _Shown, state_path: Path | None) -> None:
     quiet_timeout = _config.format_duration(shown.quiet_timeout)
     linger = _config.format_duration(shown.linger)
     print(f'quiet_timeout {quiet_timeout}, linger {linger}')
+    type_defaults: list[tuple[str, _config.SlackDefaults | _config.GitHubDefaults]] = [
+        ('slack', shown.defaults.slack),
+        ('github', shown.defaults.github),
+    ]
+    for kind, defaults in type_defaults:
+        if _written(defaults):
+            print(f'defaults for {kind}: {json.dumps(_written(defaults))}')
     width = max((len(source.key) for source in shown.sources), default=0)
     for source in shown.sources:
         interval = _config.format_duration(source.config.poll_interval)
@@ -450,6 +468,7 @@ def _show_command(args: argparse.Namespace) -> None:
     shown = _Shown(
         quiet_timeout=config.quiet_timeout,
         linger=config.linger,
+        defaults=config.defaults,
         sources=tuple(
             _ShownSource(
                 key=source.key,

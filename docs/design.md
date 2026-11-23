@@ -199,7 +199,7 @@ matches, and an event is skipped when any rule matches.
 | `_config.py` | The config models: durations, source keys, each type's source config and state union, per-type `Defaults`, `Clients`, and the edits the commands make |
 | `_state.py` | `StateFile` |
 | `_run.py` | `run_once`, the output `Record` and `SourceFailed` |
-| `_cli.py` | The `botwatch` command: `run`, `add`, `remove` and `show` |
+| `_cli.py` | The `botwatch` command: `run`, `add`, `defaults`, `remove` and `show` |
 | `_utils/` | Datetime formatting, the atomic file write, and retrying HTTP calls |
 | `slack/` | The Slack client, timestamps, the source and `ExcludeRule` |
 | `github/` | The GitHub client, the source and `ExcludeRule` |
@@ -210,6 +210,7 @@ Adding a source type means adding:
 - its event models, to the output union (`_run.py`);
 - a config model with a `key` and a `watch(clients, state=…)` method, to
   `SourceConfig`;
+- its field in `Defaults`;
 - its client, to `Clients`, created in `_cli.py` with its token;
 - its arguments to `botwatch add`, and a `describe()` on its state for
   `botwatch show`.
