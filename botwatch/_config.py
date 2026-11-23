@@ -3,6 +3,7 @@
 import pydantic
 import re
 import yaml
+from . import _exclude
 from . import _source
 from . import slack
 from collections.abc import Sequence
@@ -64,6 +65,10 @@ class SlackSourceConfig(pydantic.BaseModel):
         gt=timedelta(0),
     )
 
+    exclude: tuple[slack.ExcludeRule, ...] = ()
+    """Messages to skip, such as the caller's own posts. Skipped messages still
+    advance the source."""
+
     @property
     def key(self) -> SourceKey:
         thread = f'/{self.thread_ts}' if self.thread_ts is not None else ''
@@ -75,12 +80,15 @@ class SlackSourceConfig(pydantic.BaseModel):
         *,
         state: slack.SlackState | None,
     ) -> _source.Source[slack.SlackState, slack.MessagePosted]:
-        return slack.watch(
-            client,
-            self.conversation,
-            state=state,
-            thread_ts=self.thread_ts,
-            poll_interval=self.poll_interval,
+        return _exclude.exclude_events(
+            slack.watch(
+                client,
+                self.conversation,
+                state=state,
+                thread_ts=self.thread_ts,
+                poll_interval=self.poll_interval,
+            ),
+            lambda message: any(rule.matches(message) for rule in self.exclude),
         )
 
 

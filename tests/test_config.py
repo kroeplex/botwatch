@@ -1,6 +1,8 @@
 import pydantic
 import pytest
+import re
 from botwatch import _config
+from botwatch import slack
 from datetime import timedelta
 from pathlib import Path
 
@@ -17,7 +19,10 @@ class Test_Config__load:
             '  - type: slack\n'
             '    conversation: C0123456789\n'
             "    thread_ts: '1785600000.000200'\n"
-            '    poll_interval: 15s\n',
+            '    poll_interval: 15s\n'
+            '    exclude:\n'
+            '      - user: U0BOT\n'
+            "      - text: '^\\[op 1\\]'\n",
         )
 
         config = _config.Config.load(path)
@@ -29,6 +34,10 @@ class Test_Config__load:
             'slack:C0123456789/1785600000.000200',
         ]
         assert config.sources[1].poll_interval == timedelta(seconds=15)
+        assert config.sources[1].exclude == (
+            slack.ExcludeRule(user='U0BOT'),
+            slack.ExcludeRule(text=re.compile(r'^\[op 1\]')),
+        )
 
     def test__reads_json(self, tmp_path: Path) -> None:
         path = tmp_path / 'watch.json'
