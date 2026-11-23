@@ -118,9 +118,10 @@ sources:
         text: '^\[op 1\]'          # a regex over Slack's raw message text
 ```
 
-Both IDs are in a message's link: `…/archives/C0123456789/p1785600000000200`
-is conversation `C0123456789`, `ts` `1785600000.000200`. Quote `thread_ts`, or
-YAML reads it as a number.
+Both IDs are in the link to a thread's first message:
+`…/archives/C0123456789/p1785600000000200` is conversation `C0123456789`,
+`thread_ts` `1785600000.000200`. Quote `thread_ts`, or YAML reads it as a
+number.
 
 Each source watches one thing: a conversation's top level, or one thread.
 Slack's history of a conversation doesn't include thread replies, so watch each
