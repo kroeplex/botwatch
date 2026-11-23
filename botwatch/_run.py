@@ -85,7 +85,7 @@ async def run_once(
         _config.SourceKey,
         _source.Source[_config.SourceState, SourceEvent],
     ] = {
-        source.key: source.watch(
+        source.key: config.resolve(source).watch(
             clients,
             state=state.sources.get(source.key),
         )

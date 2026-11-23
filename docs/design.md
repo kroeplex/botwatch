@@ -86,13 +86,19 @@ ends normally, a crashed run's events are repeated by the next run.
 
 ## Editing the watch set
 
-`botwatch add` and `botwatch remove` load the config, change its sources
-(`Config.with_source`, `Config.without`), and write it back atomically,
-keeping just the settings it gives, under a lock on its directory. They
-never touch the state file: since keys derive from
-what a source watches, an added source has no entry until a run saves one, and
-a removed source's entry is dropped by the next run's save. `botwatch show`
+`botwatch add`, `botwatch defaults` and `botwatch remove` load the config,
+change it (`Config.with_source`, `Config.without`, or a type's `defaults`), and
+write it back atomically, keeping just the settings it gives, under a lock on
+its directory. They never touch the state file: since keys derive from what a
+source watches, an added source has no entry until a run saves one, and a
+removed source's entry is dropped by the next run's save. `botwatch show`
 reads both files and changes neither.
+
+**Defaults.** A config's `defaults` hold settings for every source of a type.
+`Config.resolve` applies them to a source as it runs: the default exclude rules
+ahead of the source's own, and the default poll interval unless the source sets
+one. They never change a source's key, and the config keeps them apart from
+the sources, so editing one never rewrites the other.
 
 ## The Slack source
 
@@ -190,10 +196,10 @@ matches, and an event is skipped when any rule matches.
 | `_source.py` | `Event`, `Update`, `Source` |
 | `_select.py` | `select`, and the private `_linger` timing combinator |
 | `_exclude.py` | `exclude_events` |
-| `_config.py` | The config models: durations, source keys, each type's source config and state union, `Clients`, and the edits `add` and `remove` make |
+| `_config.py` | The config models: durations, source keys, each type's source config and state union, per-type `Defaults`, `Clients`, and the edits the commands make |
 | `_state.py` | `StateFile` |
 | `_run.py` | `run_once`, the output `Record` and `SourceFailed` |
-| `_cli.py` | The `botwatch` command: `run`, `add`, `remove` and `show` |
+| `_cli.py` | The `botwatch` command: `run`, `add`, `defaults`, `remove` and `show` |
 | `_utils/` | Datetime formatting, the atomic file write, and retrying HTTP calls |
 | `slack/` | The Slack client, timestamps, the source and `ExcludeRule` |
 | `github/` | The GitHub client, the source and `ExcludeRule` |
@@ -204,6 +210,7 @@ Adding a source type means adding:
 - its event models, to the output union (`_run.py`);
 - a config model with a `key` and a `watch(clients, state=…)` method, to
   `SourceConfig`;
+- its field in `Defaults`;
 - its client, to `Clients`, created in `_cli.py` with its token;
 - its arguments to `botwatch add`, and a `describe()` on its state for
   `botwatch show`.

@@ -101,8 +101,8 @@ when the command exits, and costs nothing while it waits.
   hour, a `quiet_timeout` just under that (say `55m`) means the agent wakes at
   least that often and its context stays cached.
 - **Don't wake yourself.** If the agent posts to the conversations it watches,
-  skip its own messages with `exclude` (below). Otherwise every reply it sends
-  wakes it again.
+  skip its own messages with an `exclude` rule in `defaults` (below), set once
+  with `botwatch defaults`. Otherwise every reply it sends wakes it again.
 - **Let it manage its own watch set.** Have the agent run `botwatch add`,
   `remove` and `show --json` rather than edit the YAML: they validate as they
   go. Add a source before starting the run that should watch it, since a run
@@ -115,18 +115,22 @@ A config is YAML, and JSON works too, since JSON is YAML.
 ```yaml
 quiet_timeout: 55m   # how long to wait for the first event (default 20m)
 linger: 5s           # how much longer to collect after it (default 5s)
+defaults:            # optional: settings for every source of a type
+  slack:
+    exclude: [{user: U0123BOT}]    # applied ahead of each source's own rules
+  github:
+    poll_interval: 2m              # used unless a source sets its own
 sources:
   - type: slack
     conversation: C0123456789      # channel, private channel, DM or group DM
     thread_ts: '1785600000.000200' # optional: watch just this thread
-    poll_interval: 30s             # default 30s
+    poll_interval: 30s             # optional: else the type's default, or 30s
     exclude:                       # optional: messages to skip
       - user: U0123BOT             # every field in a rule must match
         text: '^\[op 1\]'          # a regex over Slack's raw message text
   - type: github
     repo: octo-org/octo-repo       # a pull request's comments and reviews
     pull: 26
-    poll_interval: 1m              # default 1m
     exclude:
       - user: octo-bot             # a login; text works here too
 ```

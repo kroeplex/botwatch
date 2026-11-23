@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import fcntl
 import io
+import json
 import logging
 import os
 import pydantic
@@ -58,6 +59,25 @@ def _add_config_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_setting_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        '--poll-interval',
+        metavar='DURATION',
+        help='how often to poll, e.g. 15s (built in: 30s for slack, 1m for github)',
+    )
+    parser.add_argument(
+        '--exclude',
+        action='append',
+        default=[],
+        metavar='RULE',
+        help=(
+            'skip matching events: a YAML mapping of user and text (a regex),'
+            ' plus bot_id and username for slack, e.g. "{user: U0123BOT}";'
+            ' repeatable'
+        ),
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog='botwatch',
@@ -98,7 +118,8 @@ def _build_parser() -> argparse.ArgumentParser:
             'Watch a Slack conversation or one of its threads, or a GitHub pull'
             " request's comments and reviews. For a source already watched, the"
             ' options given replace its settings, and the rest are kept;'
-            ' `--exclude` replaces the whole list.'
+            ' `--exclude` replaces the whole list. Settings a source leaves'
+            " unset fall back to its type's defaults (see `botwatch defaults`)."
         ),
     )
     _add_config_argument(add)
@@ -115,22 +136,28 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar='TS',
         help="slack only: a thread's first message `ts`, to watch just that thread",
     )
-    add.add_argument(
-        '--poll-interval',
-        metavar='DURATION',
-        help='how often to poll, e.g. 15s (default 30s for slack, 1m for github)',
-    )
-    add.add_argument(
-        '--exclude',
-        action='append',
-        default=[],
-        metavar='RULE',
-        help=(
-            'skip matching events: a YAML mapping of user and text (a regex),'
-            ' plus bot_id and username for slack, e.g. "{user: U0123BOT}";'
-            ' repeatable'
+    _add_setting_arguments(add)
+
+    defaults = commands.add_parser(
+        'defaults',
+        help='set the settings every source of a type falls back on',
+        description=(
+            'Set the defaults for every source of a type: its poll interval,'
+            ' unless a source sets its own, and exclude rules applied ahead of'
+            " each source's own. The options given replace those settings, and"
+            ' the rest are kept; `--exclude` replaces the whole list.'
         ),
     )
+    _add_config_argument(defaults)
+    defaults.add_argument(
+        'type', choices=['slack', 'github'], help='the kind of source'
+    )
+    defaults.add_argument(
+        '--reset',
+        action='store_true',
+        help="drop the type's defaults before applying the options given",
+    )
+    _add_setting_arguments(defaults)
 
     remove = commands.add_parser(
         'remove',
@@ -285,18 +312,31 @@ def _describe_target(args: argparse.Namespace) -> dict[str, object]:
     return target
 
 
+def _written(model: pydantic.BaseModel) -> dict[str, object]:
+    """What a config writes for ``model``: the settings that were given, even
+    those equal to a default."""
+    return model.model_dump(mode='json', exclude_unset=True)
+
+
+def _parse_settings(args: argparse.Namespace) -> dict[str, object]:
+    """The settings ``--poll-interval`` and ``--exclude`` give. Raises
+    :class:`yaml.YAMLError` for a rule that isn't YAML."""
+    settings: dict[str, object] = {}
+    if args.poll_interval is not None:
+        settings['poll_interval'] = args.poll_interval
+    if args.exclude:
+        settings['exclude'] = [yaml.safe_load(rule) for rule in args.exclude]
+    return settings
+
+
 def _parse_source(
     args: argparse.Namespace,
     config: _config.Config,
 ) -> _config.SourceConfig:
     """The source ``add``'s arguments describe. Settings they don't give keep
     the values of the source already watched, if there is one."""
-    given = _describe_target(args)
-    if args.poll_interval is not None:
-        given['poll_interval'] = args.poll_interval
     try:
-        if args.exclude:
-            given['exclude'] = [yaml.safe_load(rule) for rule in args.exclude]
+        given = {**_describe_target(args), **_parse_settings(args)}
         existing = config.find(_SOURCE_CONFIG.validate_python(given).key)
         kept = (
             existing.model_dump(mode='json', exclude_unset=True)
@@ -314,12 +354,40 @@ def _add_command(args: argparse.Namespace) -> None:
         config = _load_config(args.config) if args.config.exists() else _config.Config()
         source = _parse_source(args, config)
         existing = config.find(source.key)
-        if existing == source:
+        if existing is not None and _written(existing) == _written(source):
             status = 'unchanged'
         else:
             status = 'updated' if existing is not None else 'added'
             _save_config(config.with_source(source), args.config)
     print(f'{status} {source.key}')
+
+
+def _defaults_command(args: argparse.Namespace) -> None:
+    with _lock_config(args.config):
+        config = _load_config(args.config) if args.config.exists() else _config.Config()
+        existing = (
+            config.defaults.slack if args.type == 'slack' else config.defaults.github
+        )
+        try:
+            updated = type(existing).model_validate(
+                {
+                    **({} if args.reset else _written(existing)),
+                    **_parse_settings(args),
+                },
+            )
+        except (ValueError, yaml.YAMLError) as error:
+            _fail(f'bad defaults: {error}')
+        if _written(updated) == _written(existing):
+            status = 'unchanged'
+        else:
+            status = 'updated'
+            _save_config(
+                config.with_defaults(
+                    config.defaults.model_copy(update={args.type: updated}),
+                ),
+                args.config,
+            )
+    print(f'{status} defaults for {args.type}')
 
 
 def _remove_command(args: argparse.Namespace) -> None:
@@ -344,6 +412,7 @@ class _ShownSource(pydantic.BaseModel):
     key: _config.SourceKey
 
     config: _config.SourceConfig
+    """Its settings as it runs, with its type's defaults applied."""
 
     state: _config.SourceState | None
     """``None`` when it has no saved state."""
@@ -356,6 +425,8 @@ class _Shown(pydantic.BaseModel):
 
     linger: _config.Duration
 
+    defaults: _config.Defaults
+
     sources: tuple[_ShownSource, ...]
 
     unconfigured_state: tuple[_config.SourceKey, ...]
@@ -366,6 +437,13 @@ def _print_table(shown: _Shown, state_path: Path | None) -> None:
     quiet_timeout = _config.format_duration(shown.quiet_timeout)
     linger = _config.format_duration(shown.linger)
     print(f'quiet_timeout {quiet_timeout}, linger {linger}')
+    type_defaults: list[tuple[str, _config.SlackDefaults | _config.GitHubDefaults]] = [
+        ('slack', shown.defaults.slack),
+        ('github', shown.defaults.github),
+    ]
+    for kind, defaults in type_defaults:
+        if _written(defaults):
+            print(f'defaults for {kind}: {json.dumps(_written(defaults))}')
     width = max((len(source.key) for source in shown.sources), default=0)
     for source in shown.sources:
         interval = _config.format_duration(source.config.poll_interval)
@@ -390,8 +468,13 @@ def _show_command(args: argparse.Namespace) -> None:
     shown = _Shown(
         quiet_timeout=config.quiet_timeout,
         linger=config.linger,
+        defaults=config.defaults,
         sources=tuple(
-            _ShownSource(key=source.key, config=source, state=stored.get(source.key))
+            _ShownSource(
+                key=source.key,
+                config=config.resolve(source),
+                state=stored.get(source.key),
+            )
             for source in config.sources
         ),
         unconfigured_state=tuple(sorted(key for key in stored if key not in keys)),
@@ -413,6 +496,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     {
         'run': _run_command,
         'add': _add_command,
+        'defaults': _defaults_command,
         'remove': _remove_command,
         'show': _show_command,
     }[args.command](args)

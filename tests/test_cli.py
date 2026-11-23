@@ -481,6 +481,158 @@ class Test_main__add:
         assert path.read_text() == 'sources: ['
 
 
+class Test_main__defaults:
+    def test__sets_and_keeps_settings(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = tmp_path / 'watch.yaml'
+        path.write_text(_CONFIG)
+
+        added, _ = _invoke(
+            capsys,
+            'defaults',
+            '--config',
+            path,
+            'slack',
+            '--exclude',
+            '{user: U0BOT}',
+        )
+        interval, _ = _invoke(
+            capsys,
+            'defaults',
+            '--config',
+            path,
+            'slack',
+            '--poll-interval',
+            '15s',
+        )
+        unchanged, _ = _invoke(capsys, 'defaults', '--config', path, 'slack')
+        shown, _ = _invoke(capsys, 'show', '--config', path)
+
+        assert [added, interval, unchanged] == [
+            'updated defaults for slack\n',
+            'updated defaults for slack\n',
+            'unchanged defaults for slack\n',
+        ]
+        assert path.read_text() == (
+            'defaults:\n'
+            '  slack:\n'
+            '    poll_interval: 15s\n'
+            '    exclude:\n'
+            '    - user: U0BOT\n'
+            'sources:\n'
+            '- type: slack\n'
+            '  conversation: C0123456789\n'
+        )
+        assert '  slack:C0123456789  every 15s\n' in shown
+
+    def test__resets(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = tmp_path / 'watch.yaml'
+        _invoke(
+            capsys,
+            'defaults',
+            '--config',
+            path,
+            'slack',
+            '--poll-interval',
+            '15s',
+            '--exclude',
+            '{user: U0BOT}',
+        )
+
+        out, _ = _invoke(
+            capsys,
+            'defaults',
+            '--config',
+            path,
+            'slack',
+            '--reset',
+            '--exclude',
+            '{user: U0OTHER}',
+        )
+
+        assert out == 'updated defaults for slack\n'
+        assert _config.Config.load(path).defaults.slack == _config.SlackDefaults(
+            exclude=(slack.ExcludeRule(user='U0OTHER'),),
+        )
+
+    def test__are_kept_out_of_sources_and_shown(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = tmp_path / 'watch.yaml'
+        _invoke(
+            capsys,
+            'defaults',
+            '--config',
+            path,
+            'slack',
+            '--poll-interval',
+            '15s',
+            '--exclude',
+            '{user: U0BOT}',
+        )
+        _invoke(capsys, 'add', '--config', path, 'slack', 'C1')
+        _invoke(
+            capsys, 'add', '--config', path, 'slack', 'C1', '--exclude', '{text: x}'
+        )
+
+        pinned, _ = _invoke(
+            capsys,
+            'add',
+            '--config',
+            path,
+            'slack',
+            'C1',
+            '--poll-interval',
+            '30s',  # the built-in interval, pinned over the default
+        )
+        shown, _ = _invoke(capsys, 'show', '--config', path, '--json')
+
+        assert pinned == 'updated slack:C1\n'
+        assert _config.Config.load(path).sources == (
+            _config.SlackSourceConfig(
+                type='slack',
+                conversation='C1',
+                poll_interval=timedelta(seconds=30),
+                exclude=(slack.ExcludeRule(text=re.compile('x')),),
+            ),
+        )
+        document = json.loads(shown)
+        assert document['defaults']['slack'] == {
+            'poll_interval': '15s',
+            'exclude': [
+                {'user': 'U0BOT', 'bot_id': None, 'username': None, 'text': None},
+            ],
+        }
+        assert document['sources'][0]['config']['poll_interval'] == '30s'
+        assert [
+            rule['user'] or rule['text']
+            for rule in document['sources'][0]['config']['exclude']
+        ] == ['U0BOT', 'x']
+
+    def test__fails_on_a_bad_rule(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = tmp_path / 'watch.yaml'
+
+        err = _fail(
+            capsys, 'defaults', '--config', path, 'github', '--exclude', '{nope: 1}'
+        )
+
+        assert 'bad defaults' in err
+        assert not path.exists()
+
+
 class Test_main__remove:
     def test__removes_sources(
         self,
@@ -647,6 +799,10 @@ class Test_main__show:
         assert json.loads(out) == {
             'quiet_timeout': '20m',
             'linger': '5s',
+            'defaults': {
+                'slack': {'poll_interval': None, 'exclude': []},
+                'github': {'poll_interval': None, 'exclude': []},
+            },
             'sources': [
                 {
                     'key': 'slack:C1',
