@@ -9,6 +9,12 @@
 
 ## [Unreleased]
 
+## <span id="0-3-1" /> [0.3.1](https://github.com/kroeplex/botwatch/compare/0.3.0...0.3.1) - 2026-11-23
+
+### Changes
+
+* Report checks that concluded since a new source's start position ([#37](https://github.com/kroeplex/botwatch/pull/37))
+
 ## <span id="0-3-0" /> [0.3.0](https://github.com/kroeplex/botwatch/compare/0.2.1...0.3.0) - 2026-11-23
 
 ### Changes
