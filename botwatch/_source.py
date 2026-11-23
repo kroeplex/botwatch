@@ -9,11 +9,14 @@ from datetime import datetime
 class Event(pydantic.BaseModel):
     """Something that happened at a source.
 
-    Each kind of event subclasses this, adding a ``type`` literal namespaced by
-    its source type, such as ``slack.message_posted``, and its own fields.
+    Each kind of event subclasses this, narrowing ``type`` to a literal
+    namespaced by its source type, such as ``slack.message_posted``, and adding
+    its own fields.
     """
 
-    model_config = pydantic.ConfigDict(frozen=True)
+    model_config = pydantic.ConfigDict(extra='forbid', frozen=True)
+
+    type: str
 
     id: str
     """This occurrence, unique within its source and stable across replays.
@@ -44,6 +47,9 @@ type Source[StateT, EventT: Event] = AsyncGenerator[Update[StateT, EventT], None
 
 A source is created from its previous state, or from none to start from now,
 and its first update is a checkpoint of its starting state. It yields forever,
-and its consumer closes it, e.g. with :func:`contextlib.aclosing`. It fails by
-raising.
+and it fails by raising.
+
+Its consumer stops it by cancelling the pull in progress, or by closing it
+(e.g. with :func:`contextlib.aclosing`) when none is. Either way its cleanup
+runs, so a source must tolerate cancellation at any ``await``.
 """

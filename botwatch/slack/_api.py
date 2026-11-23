@@ -1,6 +1,7 @@
 """A thin async client for the parts of the Slack Web API that botwatch reads."""
 
 import asyncio
+import http
 import httpx
 import logging
 import pydantic
@@ -10,7 +11,6 @@ from collections.abc import Mapping
 from dataclasses import InitVar
 from dataclasses import dataclass
 from dataclasses import field
-from http import HTTPStatus
 from typing import Self
 
 _BASE_URL = 'https://slack.com/api/'
@@ -30,7 +30,11 @@ _logger = logging.getLogger(__name__)
 class SlackError(Exception):
     """Slack answered a call with ``"ok": false``."""
 
-    def __init__(self, method: str, error: str) -> None:
+    def __init__(
+        self,
+        method: str,
+        error: str,
+    ) -> None:
         super().__init__(f'{method}: {error}')
         self.method = method
         self.error = error
@@ -38,31 +42,18 @@ class SlackError(Exception):
 
 class Message(pydantic.BaseModel):
     """A message as ``conversations.history`` and ``conversations.replies``
-    return it, reduced to the fields botwatch reads."""
+    return it, reduced to the fields botwatch reads. See
+    :class:`~botwatch.slack.MessagePosted` for their meanings."""
 
     model_config = pydantic.ConfigDict(frozen=True)
 
     ts: _ts.SlackTs
-
     thread_ts: _ts.SlackTs | None = None
-    """The thread's parent ``ts``, on a reply or on a parent with replies."""
-
     latest_reply: _ts.SlackTs | None = None
-    """The ``ts`` of the thread's newest reply, on a parent with replies."""
-
     user: str | None = None
-    """The author's user ID. An app's bot user has one too."""
-
     bot_id: str | None = None
-    """The app integration that posted it, if an app did."""
-
     username: str | None = None
-    """The display name an app set when posting with ``chat:write.customize``."""
-
     subtype: str | None = None
-    """Slack's message subtype, such as ``thread_broadcast``. Absent on ordinary
-    messages."""
-
     text: str = ''
 
 
@@ -82,6 +73,10 @@ class _MessagesPage(pydantic.BaseModel):
     )
 
 
+type _Outcome = httpx.Response | httpx.TransportError
+"""What one attempt at a call produced: a response, or a network error."""
+
+
 def _combine_message_pages(pages: Iterable[_MessagesPage]) -> list[Message]:
     """Merges pages into one list, oldest first, without duplicates.
 
@@ -92,20 +87,34 @@ def _combine_message_pages(pages: Iterable[_MessagesPage]) -> list[Message]:
     return [by_ts[ts] for ts in sorted(by_ts)]
 
 
-def _is_transient(response: httpx.Response | None) -> bool:
-    """Whether a call failed in a way worth retrying: no response at all, rate
+def _is_transient(outcome: _Outcome) -> bool:
+    """Whether an attempt failed in a way worth retrying: a network error, rate
     limiting, or a server error."""
-    return (
-        response is None
-        or response.status_code == HTTPStatus.TOO_MANY_REQUESTS
-        or response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR
+    return isinstance(outcome, httpx.TransportError) or (
+        outcome.status_code == http.HTTPStatus.TOO_MANY_REQUESTS
+        or outcome.status_code >= http.HTTPStatus.INTERNAL_SERVER_ERROR
     )
 
 
-def _get_retry_delay(response: httpx.Response | None, backoff: float) -> float:
+def _get_retry_delay(
+    outcome: _Outcome,
+    backoff: float,
+) -> float:
     """Slack's ``Retry-After`` when it gave one, else the current backoff."""
-    retry_after = None if response is None else response.headers.get('Retry-After')
+    retry_after = (
+        outcome.headers.get('Retry-After')
+        if isinstance(outcome, httpx.Response)
+        else None
+    )
     return float(retry_after) if retry_after is not None else backoff
+
+
+def _describe(outcome: _Outcome) -> str:
+    return (
+        f'HTTP {outcome.status_code}'
+        if isinstance(outcome, httpx.Response)
+        else repr(outcome)
+    )
 
 
 @dataclass
@@ -147,17 +156,12 @@ class SlackClient:
         self,
         method: str,
         params: Mapping[str, str],
-    ) -> httpx.Response | None:
-        """Calls ``method``, or returns ``None`` on a network error."""
+    ) -> _Outcome:
         try:
-            response: httpx.Response | None = await self._http.get(
-                method,
-                params=params,
-            )
+            outcome: _Outcome = await self._http.get(method, params=params)
         except httpx.TransportError as error:
-            _logger.warning('Slack %s failed, will retry: %r', method, error)
-            response = None
-        return response
+            outcome = error
+        return outcome
 
     async def _get_messages_page(
         self,
@@ -167,22 +171,31 @@ class SlackClient:
         """Calls ``method`` until it doesn't fail transiently, and parses the
         page."""
         backoff = _INITIAL_BACKOFF
-        response = await self._try_get(method, params)
-        while _is_transient(response):
-            delay = _get_retry_delay(response, backoff)
-            _logger.warning('Slack %s: retrying in %.1fs', method, delay)
+        outcome = await self._try_get(method, params)
+        while _is_transient(outcome):
+            delay = _get_retry_delay(outcome, backoff)
+            _logger.warning(
+                'Slack %s: %s; retrying in %.1fs',
+                method,
+                _describe(outcome),
+                delay,
+            )
             await asyncio.sleep(delay)
             backoff = min(backoff * 2, _MAX_BACKOFF)
-            response = await self._try_get(method, params)
+            outcome = await self._try_get(method, params)
 
-        assert response is not None  # `_is_transient` is true for `None`
-        response.raise_for_status()
-        page = _MessagesPage.model_validate(response.json())
+        assert isinstance(outcome, httpx.Response)  # errors are transient
+        outcome.raise_for_status()
+        page = _MessagesPage.model_validate(outcome.json())
         if not page.ok:
             raise SlackError(method, page.error)
         return page
 
-    async def _fetch_messages(self, method: str, **params: str) -> list[Message]:
+    async def _fetch_messages(
+        self,
+        method: str,
+        **params: str,
+    ) -> list[Message]:
         """Calls a paged messages method, following its cursor to the end."""
         first_page_params = {**params, 'limit': str(_PAGE_SIZE)}
         page = await self._get_messages_page(method, first_page_params)

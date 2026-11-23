@@ -15,12 +15,12 @@ DEFAULT_POLL_INTERVAL = timedelta(seconds=30)
 class SlackState(pydantic.BaseModel):
     """How far a Slack source has got."""
 
-    model_config = pydantic.ConfigDict(frozen=True)
+    model_config = pydantic.ConfigDict(extra='forbid', frozen=True)
 
     type: Literal['slack'] = 'slack'
 
     after: _ts.SlackTs
-    """Every message up to and including this ``ts`` has been reported."""
+    """The source reports only messages after this ``ts``."""
 
 
 class MessagePosted(_source.Event):
@@ -53,7 +53,10 @@ class MessagePosted(_source.Event):
     text: str
 
 
-def _message_to_event(message: _api.Message, conversation: str) -> MessagePosted:
+def _message_to_event(
+    message: _api.Message,
+    conversation: str,
+) -> MessagePosted:
     return MessagePosted(
         id=message.ts,
         time=_ts.ts_to_datetime(message.ts),
@@ -89,7 +92,7 @@ def _apply_poll(
     )
 
 
-async def _start_state(
+async def _fetch_start_state(
     client: _api.SlackClient,
     conversation: str,
     *,
@@ -109,8 +112,8 @@ async def _start_state(
 async def watch(
     client: _api.SlackClient,
     conversation: str,
-    state: SlackState | None,
     *,
+    state: SlackState | None,
     thread_ts: _ts.SlackTs | None = None,
     poll_interval: timedelta = DEFAULT_POLL_INTERVAL,
 ) -> _source.Source[SlackState, MessagePosted]:
@@ -125,7 +128,7 @@ async def watch(
     Example::
 
         async with slack.SlackClient(token) as client:
-            source = slack.watch(client, 'C0123456789', None)
+            source = slack.watch(client, 'C0123456789', state=None)
             async with contextlib.aclosing(source):
                 async for update in source:
                     for event in update.events:
@@ -134,7 +137,7 @@ async def watch(
     current = (
         state
         if state is not None
-        else await _start_state(client, conversation, thread_ts=thread_ts)
+        else await _fetch_start_state(client, conversation, thread_ts=thread_ts)
     )
     yield _source.Update(events=(), state=current)
 

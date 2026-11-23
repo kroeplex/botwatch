@@ -69,7 +69,7 @@ class Test_watch:
         fake.post('1785600002.000000')
 
         async with fake.create_client() as client:
-            source = slack.watch(client, _CONVERSATION, None)
+            source = slack.watch(client, _CONVERSATION, state=None)
             async with contextlib.aclosing(source):
                 checkpoint = await anext(source)
 
@@ -86,7 +86,7 @@ class Test_watch:
             source = slack.watch(
                 client,
                 _CONVERSATION,
-                None,
+                state=None,
                 thread_ts='1785600001.000000',
             )
             async with contextlib.aclosing(source):
@@ -94,11 +94,28 @@ class Test_watch:
 
         assert checkpoint.state == slack.SlackState(after='1785600002.000000')
 
+    async def test__starts_a_thread_without_replies_after_its_parent(self) -> None:
+        fake = _fake_slack.FakeSlack()
+        fake.post('1785600001.000000')
+        fake.post('1785600002.000000')
+
+        async with fake.create_client() as client:
+            source = slack.watch(
+                client,
+                _CONVERSATION,
+                state=None,
+                thread_ts='1785600001.000000',
+            )
+            async with contextlib.aclosing(source):
+                checkpoint = await anext(source)
+
+        assert checkpoint.state == slack.SlackState(after='1785600001.000000')
+
     async def test__starts_an_empty_conversation_at_the_beginning(self) -> None:
         fake = _fake_slack.FakeSlack()
 
         async with fake.create_client() as client:
-            source = slack.watch(client, _CONVERSATION, None)
+            source = slack.watch(client, _CONVERSATION, state=None)
             async with contextlib.aclosing(source):
                 checkpoint = await anext(source)
 
@@ -111,7 +128,12 @@ class Test_watch:
         state = slack.SlackState(after='1785600001.000000')
 
         async with fake.create_client() as client:
-            source = slack.watch(client, _CONVERSATION, state, poll_interval=_NO_WAIT)
+            source = slack.watch(
+                client,
+                _CONVERSATION,
+                state=state,
+                poll_interval=_NO_WAIT,
+            )
             async with contextlib.aclosing(source):
                 checkpoint = await anext(source)
                 update = await anext(source)
@@ -128,7 +150,12 @@ class Test_watch:
         state = slack.SlackState(after='1785600001.000000')
 
         async with fake.create_client() as client:
-            source = slack.watch(client, _CONVERSATION, state, poll_interval=_NO_WAIT)
+            source = slack.watch(
+                client,
+                _CONVERSATION,
+                state=state,
+                poll_interval=_NO_WAIT,
+            )
             async with contextlib.aclosing(source):
                 await anext(source)
                 pending = asyncio.ensure_future(anext(source))
@@ -139,19 +166,23 @@ class Test_watch:
 
         assert [event.text for event in update.events] == ['late']
 
-    async def test__watches_one_thread(self) -> None:
+    async def test__watches_one_thread_across_pages(self) -> None:
         fake = _fake_slack.FakeSlack()
         fake.post('1785600001.000000', text='parent')
-        fake.post('1785600002.000000', thread_ts='1785600001.000000', text='old')
-        fake.post('1785600003.000000', thread_ts='1785600001.000000', text='new')
-        fake.post('1785600004.000000', text='elsewhere')
+        for second, text in [(2, 'old'), (3, 'new 1'), (4, 'new 2'), (5, 'new 3')]:
+            fake.post(
+                f'178560000{second}.000000',
+                thread_ts='1785600001.000000',
+                text=text,
+            )
+        fake.post('1785600006.000000', text='elsewhere')
         state = slack.SlackState(after='1785600002.000000')
 
         async with fake.create_client() as client:
             source = slack.watch(
                 client,
                 _CONVERSATION,
-                state,
+                state=state,
                 thread_ts='1785600001.000000',
                 poll_interval=_NO_WAIT,
             )
@@ -160,5 +191,8 @@ class Test_watch:
                 update = await anext(source)
 
         assert [(event.text, event.thread_ts) for event in update.events] == [
-            ('new', '1785600001.000000'),
+            ('new 1', '1785600001.000000'),
+            ('new 2', '1785600001.000000'),
+            ('new 3', '1785600001.000000'),
         ]
+        assert sum('cursor' in request.url.params for request in fake.requests) == 1

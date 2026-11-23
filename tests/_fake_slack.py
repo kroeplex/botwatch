@@ -34,7 +34,12 @@ class FakeSlack:
         user: str = 'U0456ABC',
         text: str = 'hello',
     ) -> _api.Message:
-        message = _api.Message(ts=ts, thread_ts=thread_ts, user=user, text=text)
+        message = _api.Message(
+            ts=ts,
+            thread_ts=thread_ts,
+            user=user,
+            text=text,
+        )
         if thread_ts is None:
             self.history.append(message)
         else:
