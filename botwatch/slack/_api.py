@@ -6,6 +6,7 @@ import http
 import httpx
 import logging
 import pydantic
+from .. import _utils
 from . import _ts
 from collections.abc import Iterable
 from collections.abc import Mapping
@@ -20,11 +21,6 @@ _BASE_URL = 'https://slack.com/api/'
 _PAGE_SIZE = 200
 
 _TIMEOUT = httpx.Timeout(30.0)
-
-_INITIAL_BACKOFF = 1.0
-"""Seconds before the first retry of a transient failure; doubles per retry."""
-
-_MAX_BACKOFF = 60.0
 
 _logger = logging.getLogger(__name__)
 
@@ -117,10 +113,6 @@ class _CachedHistory:
     history: RecentHistory
 
 
-type _Outcome = httpx.Response | httpx.TransportError
-"""What one attempt at a call produced: a response, or a network error."""
-
-
 def _combine_message_pages(pages: Iterable[_MessagesPage]) -> list[Message]:
     """Merges pages into one list, oldest first, without duplicates.
 
@@ -131,7 +123,7 @@ def _combine_message_pages(pages: Iterable[_MessagesPage]) -> list[Message]:
     return [by_ts[ts] for ts in sorted(by_ts)]
 
 
-def _is_transient(outcome: _Outcome) -> bool:
+def _is_transient(outcome: _utils.http.Outcome) -> bool:
     """Whether an attempt failed in a way worth retrying: a network error, rate
     limiting, or a server error."""
     return isinstance(outcome, httpx.TransportError) or (
@@ -141,7 +133,7 @@ def _is_transient(outcome: _Outcome) -> bool:
 
 
 def _get_retry_delay(
-    outcome: _Outcome,
+    outcome: _utils.http.Outcome,
     backoff: float,
 ) -> float:
     """Slack's ``Retry-After`` when it gave one, else the current backoff."""
@@ -151,14 +143,6 @@ def _get_retry_delay(
         else None
     )
     return float(retry_after) if retry_after is not None else backoff
-
-
-def _describe(outcome: _Outcome) -> str:
-    return (
-        f'HTTP {outcome.status_code}'
-        if isinstance(outcome, httpx.Response)
-        else repr(outcome)
-    )
 
 
 @dataclass
@@ -206,17 +190,6 @@ class SlackClient:
     async def __aexit__(self, *exc_info: object) -> None:
         await self._http.aclose()
 
-    async def _try_get(
-        self,
-        method: str,
-        params: Mapping[str, str],
-    ) -> _Outcome:
-        try:
-            outcome: _Outcome = await self._http.get(method, params=params)
-        except httpx.TransportError as error:
-            outcome = error
-        return outcome
-
     async def _get_messages_page(
         self,
         method: str,
@@ -224,21 +197,13 @@ class SlackClient:
     ) -> _MessagesPage:
         """Calls ``method`` until it doesn't fail transiently, and parses the
         page."""
-        backoff = _INITIAL_BACKOFF
-        outcome = await self._try_get(method, params)
-        while _is_transient(outcome):
-            delay = _get_retry_delay(outcome, backoff)
-            _logger.warning(
-                'Slack %s: %s; retrying in %.1fs',
-                method,
-                _describe(outcome),
-                delay,
-            )
-            await asyncio.sleep(delay)
-            backoff = min(backoff * 2, _MAX_BACKOFF)
-            outcome = await self._try_get(method, params)
-
-        assert isinstance(outcome, httpx.Response)  # errors are transient
+        outcome = await _utils.http.send_until_settled(
+            self._http,
+            self._http.build_request('GET', method, params=params),
+            is_transient=_is_transient,
+            get_retry_delay=_get_retry_delay,
+            logger=_logger,
+        )
         outcome.raise_for_status()
         page = _MessagesPage.model_validate(outcome.json())
         if not page.ok:

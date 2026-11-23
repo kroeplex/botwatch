@@ -4,6 +4,7 @@ import asyncio
 import httpx
 import logging
 import pytest
+from botwatch import _utils
 from botwatch import slack
 from botwatch.slack import _api
 from collections.abc import Iterator
@@ -50,7 +51,7 @@ def _create_client(
 
 @pytest.fixture(autouse=True)
 def _no_backoff(mocker: MockerFixture) -> None:
-    mocker.patch.object(_api, '_INITIAL_BACKOFF', 0.0)
+    mocker.patch.object(_utils.http, 'INITIAL_BACKOFF', 0.0)
 
 
 class Test_SlackClient__fetch_history:
@@ -116,7 +117,7 @@ class Test_SlackClient__fetch_history:
         self,
         mocker: MockerFixture,
     ) -> None:
-        mocker.patch.object(_api, '_INITIAL_BACKOFF', 16.0)
+        mocker.patch.object(_utils.http, 'INITIAL_BACKOFF', 16.0)
         sleep = mocker.patch.object(asyncio, 'sleep')
         responses: list[httpx.Response | httpx.TransportError] = [
             *[httpx.Response(503)] * 4,

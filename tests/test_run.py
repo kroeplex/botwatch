@@ -3,10 +3,12 @@ import contextlib
 import io
 import json
 import pytest
+from . import _fake_github
 from . import _fake_slack
 from botwatch import _config
 from botwatch import _run
 from botwatch import _state
+from botwatch import github
 from botwatch import slack
 from datetime import timedelta
 
@@ -32,6 +34,16 @@ _FAILING_KEY = _config.SourceKey('slack:C0NO')
 
 _FAILING_STATE = slack.SlackState(after=_PARENT)
 """The saved state of a source that fails, which it must keep."""
+
+
+def _clients(
+    slack_client: slack.SlackClient,
+    github_client: github.GitHubClient | None = None,
+) -> _config.Clients:
+    return _config.Clients(
+        slack=slack_client,
+        github=github_client or _fake_github.FakeGitHub().create_client(),
+    )
 
 
 def _create_ts(number: int) -> str:
@@ -66,7 +78,7 @@ async def test_run_once() -> None:
         state = await _run.run_once(
             config,
             _state.StateFile(sources={_FAILING_KEY: _FAILING_STATE}),
-            slack_client=client,
+            clients=_clients(client),
             out=out,
         )
         await poster
@@ -118,7 +130,7 @@ async def test_run_once__resumes_each_source_from_its_state() -> None:
         state = await _run.run_once(
             config,
             previous,
-            slack_client=client,
+            clients=_clients(client),
             out=out,
         )
 
@@ -177,7 +189,7 @@ async def _watch_in_runs(
             run = _run.run_once(
                 config,
                 state,
-                slack_client=client,
+                clients=_clients(client),
                 out=out,
             )
             if crash_after is not None and crashes:
@@ -189,7 +201,7 @@ async def _watch_in_runs(
         state = await _run.run_once(
             config,
             state,
-            slack_client=client,
+            clients=_clients(client),
             out=out,
         )
 
@@ -244,9 +256,51 @@ async def test_run_once__skips_excluded_messages_but_moves_past_them() -> None:
         state = await _run.run_once(
             config,
             previous,
-            slack_client=client,
+            clients=_clients(client),
             out=out,
         )
 
     assert [record[2] for record in _read_records(out)] == [_create_ts(2)]
     assert state.sources[_TOP.key] == slack.SlackState(after=_create_ts(3))
+
+
+async def test_run_once__writes_github_events() -> None:
+    fake_github = _fake_github.FakeGitHub()
+    fake_github.comment(3, body='please look')
+    fake_github.review(4, body='approved')
+    source = _config.GitHubSourceConfig(
+        type='github',
+        repo=_fake_github.REPO,
+        pull=_fake_github.PULL,
+        poll_interval=_POLL,
+    )
+    config = _config.Config(
+        quiet_timeout=timedelta(seconds=5),
+        linger=timedelta(seconds=0.05),
+        sources=(source,),
+    )
+    out = io.StringIO()
+
+    async with (
+        _fake_slack.FakeSlack().create_client() as slack_client,
+        fake_github.create_client() as github_client,
+    ):
+        state = await _run.run_once(
+            config,
+            _state.StateFile(
+                sources={source.key: github.GitHubState(after=_fake_github.at(2))},
+            ),
+            clients=_clients(slack_client, github_client),
+            out=out,
+        )
+
+    records = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert [record['source'] for record in records] == [source.key] * 2
+    assert [record['event']['type'] for record in records] == [
+        'github.comment_posted',
+        'github.review_submitted',
+    ]
+    assert state.sources[source.key] == github.GitHubState(
+        after=_fake_github.at(4),
+        seen=(records[1]['event']['id'],),
+    )

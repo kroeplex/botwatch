@@ -7,9 +7,11 @@ import yaml
 from . import _exclude
 from . import _source
 from . import _utils
+from . import github
 from . import slack
 from collections.abc import Collection
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Annotated
@@ -68,6 +70,22 @@ type Duration = Annotated[
 """A timedelta, written in a config as ``500ms``, ``5s``, ``55m`` or ``1h``."""
 
 
+type SourceState = Annotated[
+    slack.SlackState | github.GitHubState,
+    pydantic.Field(discriminator='type'),
+]
+"""Any source's state."""
+
+
+@dataclass(frozen=True)
+class Clients:
+    """One API client per source type, shared by every source of that type."""
+
+    slack: slack.SlackClient
+
+    github: github.GitHubClient
+
+
 class SlackSourceConfig(pydantic.BaseModel):
     """Watches a Slack conversation's top level, or with ``thread_ts`` one
     thread."""
@@ -97,20 +115,73 @@ class SlackSourceConfig(pydantic.BaseModel):
 
     def watch(
         self,
-        client: slack.SlackClient,
+        clients: Clients,
         *,
-        state: slack.SlackState | None,
+        state: SourceState | None,
     ) -> _source.Source[slack.SlackState, slack.MessagePosted]:
+        """Its source, from ``state``; a state of another type, which its key
+        rules out, counts as none."""
         return _exclude.exclude_events(
             slack.watch(
-                client,
+                clients.slack,
                 self.conversation,
-                state=state,
+                state=state if isinstance(state, slack.SlackState) else None,
                 thread_ts=self.thread_ts,
                 poll_interval=self.poll_interval,
             ),
             lambda message: any(rule.matches(message) for rule in self.exclude),
         )
+
+
+class GitHubSourceConfig(pydantic.BaseModel):
+    """Watches a pull request's conversation comments and reviews."""
+
+    model_config = pydantic.ConfigDict(extra='forbid', frozen=True)
+
+    type: Literal['github']
+
+    repo: github.Repo
+
+    pull: int = pydantic.Field(gt=0)
+    """The pull request's number."""
+
+    poll_interval: Duration = pydantic.Field(
+        default=github.DEFAULT_POLL_INTERVAL,
+        gt=timedelta(0),
+    )
+
+    exclude: tuple[github.ExcludeRule, ...] = ()
+    """Comments and reviews to skip: those matching any of these rules, such as
+    the caller's own. Skipped ones still advance the source."""
+
+    @property
+    def key(self) -> SourceKey:
+        return SourceKey(f'github:{self.repo}#{self.pull}')
+
+    def watch(
+        self,
+        clients: Clients,
+        *,
+        state: SourceState | None,
+    ) -> _source.Source[github.GitHubState, github.GitHubEvent]:
+        """Its source, from ``state``; a state of another type, which its key
+        rules out, counts as none."""
+        return _exclude.exclude_events(
+            github.watch(
+                clients.github,
+                self.repo,
+                self.pull,
+                state=state if isinstance(state, github.GitHubState) else None,
+                poll_interval=self.poll_interval,
+            ),
+            lambda event: any(rule.matches(event) for rule in self.exclude),
+        )
+
+
+type SourceConfig = Annotated[
+    SlackSourceConfig | GitHubSourceConfig,
+    pydantic.Field(discriminator='type'),
+]
 
 
 class Config(pydantic.BaseModel):
@@ -130,14 +201,14 @@ class Config(pydantic.BaseModel):
     )
     """How much longer a run collects events after its first."""
 
-    sources: tuple[SlackSourceConfig, ...] = ()
+    sources: tuple[SourceConfig, ...] = ()
 
     @pydantic.field_validator('sources')
     @classmethod
     def _check_unique_keys(
         cls,
-        sources: Sequence[SlackSourceConfig],
-    ) -> Sequence[SlackSourceConfig]:
+        sources: Sequence[SourceConfig],
+    ) -> Sequence[SourceConfig]:
         keys = [source.key for source in sources]
         duplicates = sorted({key for key in keys if keys.count(key) > 1})
         if duplicates:
@@ -145,10 +216,10 @@ class Config(pydantic.BaseModel):
             raise ValueError(f'sources watched twice: {listed}')
         return sources
 
-    def find(self, key: SourceKey) -> SlackSourceConfig | None:
+    def find(self, key: SourceKey) -> SourceConfig | None:
         return next((source for source in self.sources if source.key == key), None)
 
-    def with_source(self, source: SlackSourceConfig) -> Self:
+    def with_source(self, source: SourceConfig) -> Self:
         """This config with ``source`` added, or replacing the one with its key
         in place."""
         sources = [

@@ -34,11 +34,12 @@ stdout as JSON lines, saves the state, and exits.
 | Environment | Meaning |
 | --- | --- |
 | `SLACK_TOKEN` | The Slack token Slack sources read with. Required when any are configured. |
+| `GITHUB_TOKEN` | The GitHub token GitHub sources read with. Required when any are configured. |
 
 The config is read once, as the run starts, so a source added during a run is
 first watched by the next one, from that run's start.
 
-A bad config or state file, no `SLACK_TOKEN`, or a state file in a directory
+A bad config or state file, a missing token, or a state file in a directory
 botwatch can't write to exits 2 before the run. A state file that can't be
 saved after it also exits 2, and the next run repeats this one's events. If
 botwatch crashes, the state file is left as it was, so the next run repeats
@@ -52,17 +53,21 @@ rather than skips.
 ```console
 $ botwatch add --config CONFIG slack CONVERSATION [--thread TS] [--poll-interval DURATION] [--exclude RULE]…
 added slack:C0123456789/1785600000.000200
+$ botwatch add --config CONFIG github PULL_REQUEST [--poll-interval DURATION] [--exclude RULE]…
+added github:octo-org/octo-repo#26
 ```
 
-Watches a Slack conversation's top level, or with `--thread` one thread in it.
-Prints `added`, `updated` or `unchanged`, and the source's key.
+Watches a Slack conversation's top level, or with `--thread` one thread in it,
+or a GitHub pull request's comments and reviews. Prints `added`, `updated` or
+`unchanged`, and the source's key.
 
 | Option | Meaning |
 | --- | --- |
 | `CONVERSATION` | The conversation ID, such as `C0123456789`. |
-| `--thread TS` | The `ts` of the thread's first message, such as `1785600000.000200`. |
-| `--poll-interval DURATION` | How often to poll, such as `15s`. Default `30s`. |
-| `--exclude RULE` | Messages to skip, as a YAML mapping, such as `'{user: U0123BOT}'` or `"{text: '^\[op 1\]'}"`. Repeat it for more rules. See [Configuration](../README.md#configuration). |
+| `PULL_REQUEST` | `OWNER/REPO#NUMBER`, such as `octo-org/octo-repo#26`, or the pull request's URL. |
+| `--thread TS` | Slack only: the `ts` of the thread's first message, such as `1785600000.000200`. |
+| `--poll-interval DURATION` | How often to poll, such as `15s`. Default `30s` for Slack, `1m` for GitHub. |
+| `--exclude RULE` | Events to skip, as a YAML mapping, such as `'{user: U0123BOT}'` or `"{text: '^\[op 1\]'}"`. Repeat it for more rules. See [Configuration](../README.md#configuration). |
 
 For a source that's already watched, the options given replace its settings
 and the rest are kept; `--exclude` replaces the whole list. To reset a source,
