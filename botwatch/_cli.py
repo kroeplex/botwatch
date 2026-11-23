@@ -136,6 +136,16 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar='TS',
         help="slack only: a thread's first message `ts`, to watch just that thread",
     )
+    add.add_argument(
+        '--start-after',
+        metavar='POSITION',
+        help=(
+            'where it starts until it has saved state, such as the last thing'
+            ' already seen: a `ts` for slack, a time such as'
+            ' 2026-08-01T16:00:00Z for github (default: the run that first'
+            ' watches it)'
+        ),
+    )
     _add_setting_arguments(add)
 
     defaults = commands.add_parser(
@@ -337,6 +347,8 @@ def _parse_source(
     the values of the source already watched, if there is one."""
     try:
         given = {**_describe_target(args), **_parse_settings(args)}
+        if args.start_after is not None:
+            given['start_after'] = args.start_after
         existing = config.find(_SOURCE_CONFIG.validate_python(given).key)
         kept = (
             existing.model_dump(mode='json', exclude_unset=True)
@@ -404,8 +416,17 @@ def _remove_command(args: argparse.Namespace) -> None:
             print(f'botwatch: not watched: {key}', file=sys.stderr)
 
 
-def _describe_position(state: _config.SourceState | None) -> str:
-    return state.describe() if state is not None else 'starts from now on its next run'
+def _describe_position(
+    state: _config.SourceState | None,
+    start: _config.SourceState | None,
+) -> str:
+    """Where a source is up to, or else where its next run starts it."""
+    start_text = start.describe() if start is not None else 'from now'
+    return (
+        state.describe()
+        if state is not None
+        else f'starts {start_text} on its next run'
+    )
 
 
 class _ShownSource(pydantic.BaseModel):
@@ -448,7 +469,9 @@ def _print_table(shown: _Shown, state_path: Path | None) -> None:
     for source in shown.sources:
         interval = _config.format_duration(source.config.poll_interval)
         position = (
-            f'  {_describe_position(source.state)}' if state_path is not None else ''
+            f'  {_describe_position(source.state, source.config.start_state())}'
+            if state_path is not None
+            else ''
         )
         print(f'  {source.key:<{width}}  every {interval}{position}')
     if not shown.sources:

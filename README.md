@@ -105,8 +105,9 @@ when the command exits, and costs nothing while it waits.
   with `botwatch defaults`. Otherwise every reply it sends wakes it again.
 - **Let it manage its own watch set.** Have the agent run `botwatch add`,
   `remove` and `show --json` rather than edit the YAML: they validate as they
-  go. Add a source before starting the run that should watch it, since a run
-  reads its config once, as it starts.
+  go. When it adds a source it has already read, such as a thread it just
+  replied in, pass `--start-after` with the last thing it saw, so nothing
+  posted before the next run is missed.
 
 ## Configuration
 
@@ -157,8 +158,9 @@ doesn't count against GitHub's rate limit.
 
 A source's identity is derived from what it watches, such as
 `slack:C0123456789/1785600000.000200`, so the state file needs no migration as
-the watch set changes. A source you add starts from now. A source you remove
-has its state dropped on the next run.
+the watch set changes. A source you add starts from the run that first watches
+it, or after its `start_after` (a `ts`, or a time for GitHub) when you give
+one. A source you remove has its state dropped on the next run.
 
 ### Growing and pruning the watch set
 

@@ -379,3 +379,42 @@ async def test_run_once__writes_github_events() -> None:
         after=_fake_github.at(4),
         seen={records[1]['event']['id']: _fake_github.at(4)},
     )
+
+
+async def test_run_once__starts_a_new_source_at_its_start_position() -> None:
+    fake = _fake_slack.FakeSlack()
+    for number in [1, 2, 3]:
+        fake.post(_create_ts(number))
+    fake_github = _fake_github.FakeGitHub(now=_fake_github.at(20))
+    fake_github.comment(1, body='seen')
+    fake_github.comment(3, body='new')
+    top = _TOP.model_copy(update={'start_after': _create_ts(1)})
+    pull_request = _PULL_REQUEST.model_copy(
+        update={'start_after': _fake_github.at(2)},
+    )
+    config = _config.Config(
+        quiet_timeout=timedelta(seconds=5),
+        linger=timedelta(seconds=0.05),
+        sources=(top, pull_request),
+    )
+    out = io.StringIO()
+
+    async with (
+        fake.create_client() as client,
+        fake_github.create_client() as github_client,
+    ):
+        await _run.run_once(
+            config,
+            _state.StateFile(),
+            clients=_clients(client, github_client),
+            out=out,
+        )
+
+    records = _read_records(out)
+    assert [id_ for source, _, id_ in records if source == top.key] == [
+        _create_ts(2),
+        _create_ts(3),
+    ]
+    assert [type_ for source, type_, _ in records if source == pull_request.key] == [
+        'github.comment_posted',
+    ]

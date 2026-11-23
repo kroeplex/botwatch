@@ -232,8 +232,8 @@ order, since GitHub can reveal events out of time order, and its whole-second
 times don't order the events within one second.
 
 A new source's state is first saved by a run that ends normally after the
-source has delivered its first update. Until then, each run starts it from that
-run's own now. The gap between runs observes nothing, so several changes made
+source has delivered its first update. Until then, each run starts it from its
+`start_after`, or else from that run's own now. The gap between runs observes nothing, so several changes made
 inside it can surface as one, just as they would with a slower poll.
 
 Checked by `test_run_once__where_a_run_ends_never_changes_what_is_emitted` in

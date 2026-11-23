@@ -109,10 +109,23 @@ class SlackSourceConfig(pydantic.BaseModel):
     """Messages to skip: those matching any of these rules, such as the
     caller's own posts. Skipped messages still advance the source."""
 
+    start_after: slack.SlackTs | None = None
+    """Where the source starts while it has no saved state: after this ``ts``,
+    such as the last message the caller has seen. Without it, the source starts
+    from the run that first watches it."""
+
     @property
     def key(self) -> SourceKey:
         thread = f'/{self.thread_ts}' if self.thread_ts is not None else ''
         return SourceKey(f'slack:{self.conversation}{thread}')
+
+    def start_state(self) -> slack.SlackState | None:
+        """The state it starts from while it has no saved state, if not now."""
+        return (
+            slack.SlackState(after=self.start_after)
+            if self.start_after is not None
+            else None
+        )
 
     def watch(
         self,
@@ -120,13 +133,15 @@ class SlackSourceConfig(pydantic.BaseModel):
         *,
         state: SourceState | None,
     ) -> _source.Source[slack.SlackState, slack.MessagePosted]:
-        """Its source, from ``state``; a state of another type, which its key
-        rules out, counts as none."""
+        """Its source, from ``state``, or else its start state; a state of
+        another type, which its key rules out, counts as none."""
         return _exclude.exclude_events(
             slack.watch(
                 clients.slack,
                 self.conversation,
-                state=state if isinstance(state, slack.SlackState) else None,
+                state=(
+                    state if isinstance(state, slack.SlackState) else self.start_state()
+                ),
                 thread_ts=self.thread_ts,
                 poll_interval=self.poll_interval,
             ),
@@ -155,9 +170,22 @@ class GitHubSourceConfig(pydantic.BaseModel):
     """Comments and reviews to skip: those matching any of these rules, such as
     the caller's own. Skipped ones still advance the source."""
 
+    start_after: github.Time | None = None
+    """Where the source starts while it has no saved state: from this time on,
+    such as that of the last event the caller has seen. Without it, the source
+    starts from the run that first watches it."""
+
     @property
     def key(self) -> SourceKey:
         return SourceKey(f'github:{self.repo}#{self.pull}')
+
+    def start_state(self) -> github.GitHubState | None:
+        """The state it starts from while it has no saved state, if not now."""
+        return (
+            github.GitHubState(after=self.start_after)
+            if self.start_after is not None
+            else None
+        )
 
     def watch(
         self,
@@ -165,14 +193,18 @@ class GitHubSourceConfig(pydantic.BaseModel):
         *,
         state: SourceState | None,
     ) -> _source.Source[github.GitHubState, github.GitHubEvent]:
-        """Its source, from ``state``; a state of another type, which its key
-        rules out, counts as none."""
+        """Its source, from ``state``, or else its start state; a state of
+        another type, which its key rules out, counts as none."""
         return _exclude.exclude_events(
             github.watch(
                 clients.github,
                 self.repo,
                 self.pull,
-                state=state if isinstance(state, github.GitHubState) else None,
+                state=(
+                    state
+                    if isinstance(state, github.GitHubState)
+                    else self.start_state()
+                ),
                 poll_interval=self.poll_interval,
             ),
             lambda event: any(rule.matches(event) for rule in self.exclude),

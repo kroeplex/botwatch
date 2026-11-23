@@ -2,7 +2,7 @@
 
 ```console
 $ botwatch [run] --config CONFIG [--state STATE]
-$ botwatch add --config CONFIG slack CONVERSATION [--thread TS] [--poll-interval DURATION] [--exclude RULE]…
+$ botwatch add --config CONFIG slack CONVERSATION [--thread TS] [--start-after TS] [--poll-interval DURATION] [--exclude RULE]…
 $ botwatch defaults --config CONFIG TYPE [--reset] [--poll-interval DURATION] [--exclude RULE]…
 $ botwatch remove --config CONFIG KEY…
 $ botwatch show --config CONFIG [--state STATE] [--json]
@@ -38,7 +38,8 @@ stdout as JSON lines, saves the state, and exits.
 | `GITHUB_TOKEN` | The GitHub token GitHub sources read with. Required when any are configured. |
 
 The config is read once, as the run starts, so a source added during a run is
-first watched by the next one, from that run's start.
+first watched by the next one. Without a `start_after`, it starts from that
+run's start.
 
 A bad config or state file, a missing token, or a state file in a directory
 botwatch can't write to exits 2 before the run. A state file that can't be
@@ -52,9 +53,9 @@ rather than skips.
 ## `add`
 
 ```console
-$ botwatch add --config CONFIG slack CONVERSATION [--thread TS] [--poll-interval DURATION] [--exclude RULE]…
+$ botwatch add --config CONFIG slack CONVERSATION [--thread TS] [--start-after TS] [--poll-interval DURATION] [--exclude RULE]…
 added slack:C0123456789/1785600000.000200
-$ botwatch add --config CONFIG github PULL_REQUEST [--poll-interval DURATION] [--exclude RULE]…
+$ botwatch add --config CONFIG github PULL_REQUEST [--start-after TIME] [--poll-interval DURATION] [--exclude RULE]…
 added github:octo-org/octo-repo#26
 ```
 
@@ -67,6 +68,7 @@ or a GitHub pull request's comments and reviews. Prints `added`, `updated` or
 | `CONVERSATION` | The conversation ID, such as `C0123456789`. |
 | `PULL_REQUEST` | `OWNER/REPO#NUMBER`, such as `octo-org/octo-repo#26`, or the pull request's URL. |
 | `--thread TS` | Slack only: the `ts` of the thread's first message, such as `1785600000.000200`. |
+| `--start-after POSITION` | Where the source starts until a run has saved its state, such as the last thing the caller has already seen: a `ts` for Slack, or a time such as `2026-08-01T16:00:00Z` for GitHub. Without it, the source starts from the run that first watches it. |
 | `--poll-interval DURATION` | How often to poll, such as `15s`. Unset, it falls back to the type's default (see `defaults`), or else `30s` for Slack, `1m` for GitHub. |
 | `--exclude RULE` | Events to skip, as a YAML mapping, such as `'{user: U0123BOT}'` or `"{text: '^\[op 1\]'}"`. Repeat it for more rules. See [Configuration](../README.md#configuration). |
 
