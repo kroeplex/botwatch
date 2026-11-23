@@ -272,13 +272,15 @@ class Test_SlackClient__fetch_recent_history:
         async with slack.SlackClient('xoxb-test', transport=transport) as client:
             first = asyncio.create_task(
                 client.fetch_recent_history(
-                    _CONVERSATION, max_age=timedelta(minutes=1)
+                    _CONVERSATION,
+                    max_age=timedelta(minutes=1),
                 ),
             )
             await fetching.wait()
             second = asyncio.create_task(
                 client.fetch_recent_history(
-                    _CONVERSATION, max_age=timedelta(minutes=1)
+                    _CONVERSATION,
+                    max_age=timedelta(minutes=1),
                 ),
             )
             await asyncio.sleep(0)  # until it waits for the lock

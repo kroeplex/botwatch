@@ -109,15 +109,16 @@ def _find_latest_ts(
     An empty conversation starts at the beginning. Slack can return an empty
     page while more remain, which tells nothing.
     """
-    if thread_ts is None:
-        latest: _ts.SlackTs | None = (
-            recent.messages[-1].ts
-            if recent.messages
-            else (_ts.EPOCH if recent.is_complete else None)
-        )
-    else:
+    latest: _ts.SlackTs | None
+    if thread_ts is not None:
         parent = recent.find(thread_ts)
         latest = parent.latest_ts if parent is not None else None
+    elif recent.messages:
+        latest = recent.messages[-1].ts
+    elif recent.is_complete:
+        latest = _ts.EPOCH
+    else:
+        latest = None
     return latest
 
 
