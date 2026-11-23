@@ -31,7 +31,8 @@ _TOKEN_EPILOG = (
 )
 
 _PULL_REQUEST_PATTERN = re.compile(
-    r'(?:https://github\.com/)?(?P<repo>[\w.-]+/[\w.-]+)(?:#|/pull/)(?P<pull>\d+)/?',
+    r'(?:https://github\.com/)?(?P<repo>[\w.-]+/[\w.-]+)(?:#|/pull/)(?P<pull>\d+)'
+    r'(?:[/?#].*)?',
 )
 """A pull request, as ``OWNER/REPO#NUMBER`` or its URL."""
 

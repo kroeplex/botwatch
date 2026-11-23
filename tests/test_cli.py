@@ -349,7 +349,12 @@ class Test_main__add:
 
     @pytest.mark.parametrize(
         'target',
-        ['octo-org/octo-repo#26', 'https://github.com/octo-org/octo-repo/pull/26'],
+        [
+            'octo-org/octo-repo#26',
+            'https://github.com/octo-org/octo-repo/pull/26',
+            'https://github.com/octo-org/octo-repo/pull/26/files?w=1',
+            'https://github.com/octo-org/octo-repo/pull/26#issuecomment-1',
+        ],
     )
     def test__adds_a_pull_request(
         self,

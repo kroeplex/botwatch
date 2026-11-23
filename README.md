@@ -195,9 +195,9 @@ Each event is one JSON line, flushed as it's written:
 Each event type then carries its own fields: for Slack, `conversation`, `ts`,
 `thread_ts`, `user`, `bot_id`, `username`, `subtype` and `text`; for GitHub,
 `repo`, `pull`, `user`, `body` and `url`, plus a review's `state` and
-`comments`; for `botwatch.source_failed`, `error`, what the source raised. Diagnostics go
-to stderr. The exit status is 0 after a normal run, and 2 for a bad config,
-state file or environment.
+`comments`, each with its `path` and `line`; for `botwatch.source_failed`,
+`error`, what the source raised. Diagnostics go to stderr. The exit status is 0
+after a normal run, and 2 for a bad config, state file or environment.
 
 ## Using it from Python
 

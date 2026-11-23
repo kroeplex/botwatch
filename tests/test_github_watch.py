@@ -1,6 +1,7 @@
 # pylint: disable=protected-access
 
 import contextlib
+import httpx
 from . import _fake_github
 from botwatch import github
 from botwatch.github import _watch
@@ -37,27 +38,28 @@ class Test_apply_poll:
             _comment('comment-2', at(1)),
         ]
 
-        update = _watch._apply_poll(state, events)
+        update = _watch._apply_poll(state, events, settled_before=at(10))
 
         assert [event.id for event in update.events] == ['comment-2', 'comment-3']
         assert update.state == github.GitHubState(after=at(3), seen=('comment-3',))
 
-    def test__remembers_every_event_in_the_last_second(self) -> None:
-        state = github.GitHubState(after=at(1), seen=('comment-1',))
-        events = [_comment('comment-1', at(1)), _comment('comment-2', at(1))]
+    def test__trails_events_that_may_not_have_settled(self) -> None:
+        state = github.GitHubState(after=at(1))
+        events = [_comment('comment-1', at(1)), _comment('comment-3', at(3))]
 
-        update = _watch._apply_poll(state, events)
+        update = _watch._apply_poll(state, events, settled_before=at(2))
 
-        assert [event.id for event in update.events] == ['comment-2']
-        assert update.state == github.GitHubState(
-            after=at(1),
-            seen=('comment-1', 'comment-2'),
-        )
+        assert [event.id for event in update.events] == ['comment-1', 'comment-3']
+        assert update.state == github.GitHubState(after=at(2), seen=('comment-3',))
 
     def test__without_new_events_keeps_the_state(self) -> None:
         state = github.GitHubState(after=at(1), seen=('comment-1',))
 
-        update = _watch._apply_poll(state, [_comment('comment-1', at(1))])
+        update = _watch._apply_poll(
+            state,
+            [_comment('comment-1', at(1))],
+            settled_before=at(10),
+        )
 
         assert not update.events
         assert update.state == state
@@ -113,9 +115,9 @@ class Test_watch:
         assert isinstance(submitted, github.ReviewSubmitted)
         assert submitted.state == 'CHANGES_REQUESTED'
         assert submitted.body == 'a few things'
-        assert [comment.body for comment in submitted.comments] == [
-            'typo here',
-            'and here',
+        assert [(comment.body, comment.line) for comment in submitted.comments] == [
+            ('typo here', 1),
+            ('and here', 1),
         ]
 
     async def test__places_a_review_by_when_it_was_submitted(self) -> None:
@@ -128,6 +130,36 @@ class Test_watch:
         events = await _poll_once(fake, state)
 
         assert [event.body for event in events] == ['done']
+
+    async def test__reports_an_event_listed_late(self) -> None:
+        fake = _fake_github.FakeGitHub(now=at(5))
+
+        def post_between_listings(request: httpx.Request) -> None:
+            if request.url.path.endswith('/comments') and not fake.comments:
+                fake.comment(4, body='after the comments were listed')
+                fake.review(5, body='before the reviews were listed')
+
+        fake.after_each = post_between_listings
+
+        async with fake.create_client() as client:
+            source = github.watch(
+                client,
+                _REPO,
+                _PULL,
+                state=github.GitHubState(after=at(2)),
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                first = await anext(source)
+                second = await anext(source)
+
+        assert [event.body for event in first.events] == [
+            'before the reviews were listed',
+        ]
+        assert [event.body for event in second.events] == [
+            'after the comments were listed',
+        ]
 
     async def test__reports_nothing_twice(self) -> None:
         fake = _fake_github.FakeGitHub()

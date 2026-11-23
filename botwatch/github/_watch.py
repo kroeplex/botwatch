@@ -19,28 +19,30 @@ type Repo = Annotated[
 ]
 """A repository's full name, such as ``octo-org/octo-repo``."""
 
-_SINCE_MARGIN = timedelta(seconds=1)
-"""Asks for comments from a little before the cursor, as GitHub's ``since``
-doesn't say whether it includes its own second."""
+_SETTLE_TIME = timedelta(seconds=10)
+"""How long after its time an event may still be becoming visible. GitHub's
+timestamps don't follow the order in which events become visible, and a poll
+lists them in several calls."""
 
 
 class GitHubState(pydantic.BaseModel):
-    """How far a GitHub source has got.
+    """How far a GitHub source has got: a time, and the events from then on
+    already reported.
 
-    GitHub's times are whole seconds, so ``after`` alone can't tell apart two
-    events in the same second; ``seen`` lists those already reported.
+    The time trails the newest event reported by up to :data:`_SETTLE_TIME`,
+    so an event that becomes visible late is still listed by the next poll.
     """
 
     model_config = pydantic.ConfigDict(extra='forbid', frozen=True)
 
     type: Literal['github'] = 'github'
 
-    after: datetime
+    after: pydantic.AwareDatetime
     """The source reports only events at or after this time, by GitHub's
     clock."""
 
     seen: tuple[str, ...] = ()
-    """The IDs of the events already reported at exactly ``after``."""
+    """The IDs of the events at or after ``after`` already reported."""
 
     @pydantic.field_serializer('after', when_used='json')
     def _serialize_after(self, after: datetime) -> str:
@@ -118,27 +120,39 @@ class ReviewSubmitted(_source.Event):
 type GitHubEvent = CommentPosted | ReviewSubmitted
 
 
-def _is_new(state: GitHubState, time: datetime, event_id: str) -> bool:
-    return time > state.after or (time == state.after and event_id not in state.seen)
-
-
 def _apply_poll(
     state: GitHubState,
     events: Sequence[GitHubEvent],
+    *,
+    settled_before: datetime,
 ) -> _source.Update[GitHubState, GitHubEvent]:
     """Folds one poll's events into the state: those not yet reported, oldest
-    first, and the state after them."""
+    first, and the state after them.
+
+    ``events`` are every event the poll listed at or after ``state.after``.
+    The state moves on to the newest event reported, but no further than
+    ``settled_before``, before which every event is visible, and remembers
+    every listed event from there on.
+    """
     new_events = sorted(
-        (event for event in events if _is_new(state, event.time, event.id)),
+        (
+            event
+            for event in events
+            if event.time >= state.after and event.id not in state.seen
+        ),
         key=lambda event: (event.time, event.id),
     )
-    after = new_events[-1].time if new_events else state.after
-    seen = (state.seen if after == state.after else ()) + tuple(
-        event.id for event in new_events if event.time == after
+    after = (
+        max(state.after, min(new_events[-1].time, settled_before))
+        if new_events
+        else state.after
     )
+    seen = {event.id for event in events if event.time >= after}
+    if after == state.after:
+        seen.update(state.seen)
     return _source.Update(
         events=tuple(new_events),
-        state=GitHubState(after=after, seen=seen),
+        state=GitHubState(after=after, seen=tuple(sorted(seen))),
     )
 
 
@@ -192,34 +206,38 @@ async def _fetch_events(
     client: _api.GitHubClient,
     repo: str,
     pull: int,
-    state: GitHubState,
+    after: datetime,
 ) -> list[GitHubEvent]:
-    """The comments and submitted reviews at or after ``state.after``, without
-    those already reported.
+    """The comments and submitted reviews at or after ``after``.
 
     A review is placed by when it was submitted, not by its ID, which it gets
     while still pending.
     """
-    comments = await client.fetch_issue_comments(
-        repo,
-        pull,
-        since=state.after - _SINCE_MARGIN,
-    )
+    comments = await client.fetch_issue_comments(repo, pull, since=after)
     submitted = [
         (review, submitted_at)
         for review in await client.fetch_reviews(repo, pull)
-        if (submitted_at := review.submitted_at) is not None
-        and _is_new(state, submitted_at, f'review-{review.id}')
+        if (submitted_at := review.submitted_at) is not None and submitted_at >= after
     ]
-    events: list[GitHubEvent] = [
-        _comment_to_event(comment, repo, pull) for comment in comments
+    review_comments: dict[int, list[_api.ReviewComment]] = {}
+    if submitted:
+        for comment in await client.fetch_review_comments(repo, pull):
+            review_comments.setdefault(comment.pull_request_review_id, []).append(
+                comment,
+            )
+    return [
+        *(_comment_to_event(comment, repo, pull) for comment in comments),
+        *(
+            _review_to_event(
+                review,
+                submitted_at,
+                review_comments.get(review.id, []),
+                repo,
+                pull,
+            )
+            for review, submitted_at in submitted
+        ),
     ]
-    for review, submitted_at in submitted:
-        review_comments = await client.fetch_review_comments(repo, pull, review.id)
-        events.append(
-            _review_to_event(review, submitted_at, review_comments, repo, pull),
-        )
-    return events
 
 
 async def watch(
@@ -242,8 +260,13 @@ async def watch(
     yield _source.Update(events=(), state=current)
 
     while True:
-        events = await _fetch_events(client, repo, pull, current)
-        update = _apply_poll(current, events)
+        started_at = await client.fetch_time()
+        events = await _fetch_events(client, repo, pull, current.after)
+        update = _apply_poll(
+            current,
+            events,
+            settled_before=started_at - _SETTLE_TIME,
+        )
         if update.events:
             yield update
         current = update.state

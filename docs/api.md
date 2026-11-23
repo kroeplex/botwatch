@@ -31,7 +31,7 @@ fit together; the docstrings have the details.
 | --- | --- |
 | `GitHubClient(token)` | An async REST API client for one token, used as an async context manager. It retries transient failures, and asks again conditionally on each response's `ETag`. |
 | `watch(client, repo, pull, *, state, poll_interval=DEFAULT_POLL_INTERVAL)` | A source for one pull request's conversation comments and submitted reviews. |
-| `GitHubState` | A GitHub source's state: `after`, by GitHub's clock, and the `seen` event IDs at exactly that second. |
+| `GitHubState` | A GitHub source's state: `after`, by GitHub's clock, and the `seen` IDs of the events from then on already reported. |
 | `CommentPosted`, `ReviewSubmitted` | The `github.comment_posted` and `github.review_submitted` events; a review carries its `ReviewComment`s. |
 | `ExcludeRule` | A rule over `user` (a login) and a `text` regex over the body. |
 | `GitHubError` | Raised for an error response that retrying won't fix. |

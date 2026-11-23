@@ -13,11 +13,13 @@ class ExcludeRule(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra='forbid', frozen=True)
 
     user: str | None = None
-    """The author's login."""
+    """The author's login, in any case."""
 
     text: re.Pattern[str] | None = None
     """A regular expression, searched for anywhere in the comment's or review's
-    Markdown body. Anchor it with ``^``; set flags inline, such as ``(?i)``."""
+    Markdown body. A review with comments but no body, such as a lone reply on
+    the diff, matches when every one of its comments does. Anchor it with ``^``; set
+    flags inline, such as ``(?i)``."""
 
     @pydantic.model_validator(mode='after')
     def _check_some_field_is_set(self) -> Self:
@@ -26,7 +28,22 @@ class ExcludeRule(pydantic.BaseModel):
             raise ValueError('an exclude rule needs at least one field')
         return self
 
-    def matches(self, event: _watch.GitHubEvent) -> bool:
-        return (self.user is None or event.user == self.user) and (
-            self.text is None or self.text.search(event.body) is not None
+    def _matches_text(self, event: _watch.GitHubEvent) -> bool:
+        bodies = (
+            [comment.body for comment in event.comments]
+            if isinstance(event, _watch.ReviewSubmitted)
+            and not event.body
+            and event.comments
+            else [event.body]
         )
+        return self.text is None or all(
+            self.text.search(body) is not None for body in bodies
+        )
+
+    def matches(self, event: _watch.GitHubEvent) -> bool:
+        return (
+            self.user is None
+            or (
+                event.user is not None and event.user.casefold() == self.user.casefold()
+            )
+        ) and self._matches_text(event)

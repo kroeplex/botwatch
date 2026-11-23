@@ -23,8 +23,8 @@ Three properties shape everything below:
 ## Sources, updates and events
 
 A **source** watches one thing, such as one Slack conversation's top level,
-one Slack thread, or one GitHub pull request. In code, a source is an async generator of **updates**
-(`botwatch.Source`):
+one Slack thread, or one GitHub pull request. In code, a source is an async
+generator of **updates** (`botwatch.Source`):
 
 ```python
 @dataclass(frozen=True)
@@ -151,21 +151,27 @@ submitted reviews, through the REST API.
   and `github.review_submitted` for each review once submitted, carrying the
   review's comments on the diff. Every diff comment belongs to a review, even a
   lone reply, so reviews cover them all.
-- **State.** GitHub's times are whole seconds, so the state is a time, `after`,
-  plus `seen`, the IDs of the events already reported at exactly that second.
-  A review is placed by when it was submitted rather than by its ID, which it
-  takes while still pending, so a review submitted late is never mistaken for
-  an old one.
-- **Starting.** A fresh source starts from now by GitHub's clock, the `Date`
-  of a call that doesn't count against the rate limit.
-- **Polling.** Each poll lists the comments since `after` and every review,
-  and fetches the comments of each new review. A pure step, `_apply_poll`,
-  keeps the events not yet reported, oldest first, and advances the state.
-- **The client** (`github/_api.py`) keeps each response's `ETag` and asks again
-  conditionally, so an unchanged poll is answered with 304s, which GitHub
-  doesn't count against the rate limit. It retries rate limiting (honouring
-  `Retry-After` and the rate limit's reset), server errors and network errors
-  without limit; any other error raises `GitHubError`.
+- **State.** The state is a time, `after`, by GitHub's clock, plus `seen`, the
+  IDs of the events from then on already reported. A review is placed by when
+  it was submitted rather than by its ID, which it takes while still pending.
+- **Settling.** GitHub's timestamps don't follow the order in which events
+  become visible, and a poll lists events in several calls. So `after` trails
+  the newest event reported, by up to ten seconds before the poll began, and
+  `seen` keeps the next poll from reporting again what it lists twice.
+- **Starting.** A fresh source starts from now by GitHub's clock: the `Date`
+  of a call that doesn't count against the rate limit. Each poll starts the
+  same way.
+- **Polling.** Each poll lists the comments since `after`, every review, and,
+  when a review is new, every diff comment, grouped into its review. A pure
+  step, `_apply_poll`, keeps the events not yet reported, oldest first, and
+  advances the state.
+- **The client** (`github/_api.py`) counts a list's pages, since a 304 carries
+  no `Link` header, and keeps each page's `ETag` to ask again conditionally.
+  An unchanged poll is then answered with 304s, which GitHub doesn't count
+  against the rate limit. It retries rate limiting (honouring `Retry-After`,
+  the rate limit's reset, or a minute for a secondary limit), server errors and
+  network errors without limit, and follows redirects; any other error raises
+  `GitHubError`.
 
 ## Stages
 
@@ -174,8 +180,8 @@ the events a predicate matches but keeps each update's state, so skipped events
 still move the source along. An update whose events are all dropped becomes a
 plain checkpoint. Each source type's `exclude` config is built from it: Slack's
 rules are over `user`, `bot_id`, `username` and a `text` regex, and GitHub's
-over `user` and a `text` regex. A rule matches when every field
-set in it matches, and a message is skipped when any rule matches.
+over `user` and a `text` regex. A rule matches when every field set in it
+matches, and an event is skipped when any rule matches.
 
 ## Code map
 
@@ -214,7 +220,8 @@ that source, the events successive runs emit for it form the same sequence
 however each run ends, a crash included, once repeats are dropped by
 `(source, id)` and `botwatch.*` events are ignored. Only a run that ends
 without saving its state, such as a crash, may cause repeats, and no event is
-ever skipped.
+ever skipped. A GitHub source is held to the same set of events but not to one
+order, since GitHub can reveal events out of the order of their times.
 
 A new source's state is first saved by a run that ends normally after the
 source has delivered its first update. Until then, each run starts it from that

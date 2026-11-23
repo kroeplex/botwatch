@@ -81,10 +81,13 @@ class ReviewComment(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(frozen=True)
 
     id: int
+    pull_request_review_id: int
     user: User | None
     body: str
     path: str
-    line: int | None = None
+    line: int | None
+    """``None`` once the diff has moved on."""
+
     in_reply_to_id: int | None = None
     html_url: str
 
@@ -97,16 +100,21 @@ _ISSUE_COMMENTS = pydantic.TypeAdapter(list[IssueComment])
 _REVIEWS = pydantic.TypeAdapter(list[Review])
 _REVIEW_COMMENTS = pydantic.TypeAdapter(list[ReviewComment])
 
+_SECONDARY_LIMIT_WAIT = 60.0
+"""Seconds to wait at least on a secondary rate limit that names no wait, as
+GitHub asks."""
+
 
 def _is_rate_limited(response: httpx.Response) -> bool:
-    """GitHub signals its primary and secondary rate limits with a 403 or 429
-    and these headers."""
-    return response.status_code in (
-        http.HTTPStatus.FORBIDDEN,
-        http.HTTPStatus.TOO_MANY_REQUESTS,
-    ) and (
-        response.headers.get('x-ratelimit-remaining') == '0'
-        or 'retry-after' in response.headers
+    """GitHub signals its rate limits with a 429, or a 403 that says so in its
+    headers or its message."""
+    return response.status_code == http.HTTPStatus.TOO_MANY_REQUESTS or (
+        response.status_code == http.HTTPStatus.FORBIDDEN
+        and (
+            response.headers.get('x-ratelimit-remaining') == '0'
+            or 'retry-after' in response.headers
+            or 'rate limit' in response.text.lower()
+        )
     )
 
 
@@ -122,24 +130,33 @@ def _is_transient(outcome: _utils.http.Outcome) -> bool:
 def _get_retry_delay(
     outcome: _utils.http.Outcome,
     backoff: float,
-    now: float,
 ) -> float:
-    """GitHub's ``Retry-After`` when it gave one, else the wait until the rate
-    limit resets when it's exhausted, else the current backoff."""
-    headers = outcome.headers if isinstance(outcome, httpx.Response) else {}
+    """GitHub's ``Retry-After`` when it gave one; else at least the backoff, and
+    until the rate limit resets by GitHub's clock when it's exhausted, or a
+    minute on any other rate limit."""
+    response = outcome if isinstance(outcome, httpx.Response) else None
+    headers = response.headers if response is not None else httpx.Headers()
     if 'retry-after' in headers:
         delay = float(headers['retry-after'])
     elif headers.get('x-ratelimit-remaining') == '0' and 'x-ratelimit-reset' in headers:
-        delay = max(0.0, float(headers['x-ratelimit-reset']) - now)
+        now = (
+            email.utils.parsedate_to_datetime(headers['date']).timestamp()
+            if 'date' in headers
+            else time.time()
+        )
+        delay = max(backoff, float(headers['x-ratelimit-reset']) - now)
+    elif response is not None and _is_rate_limited(response):
+        delay = max(backoff, _SECONDARY_LIMIT_WAIT)
     else:
         delay = backoff
     return delay
 
 
 @dataclass(frozen=True)
-class _Page:
+class _Cached:
+    url: str
+    etag: str
     content: bytes
-    next_url: str | None
 
 
 @dataclass
@@ -151,7 +168,7 @@ class GitHubClient:
     each logged as a warning. Any other error response raises
     :class:`GitHubError`.
 
-    Every response's ``ETag`` is kept, and the same request is made again
+    Each list page's ``ETag`` is kept, and the same page is asked for again
     conditionally, so a poll that finds nothing changed is answered with 304s,
     which GitHub doesn't count against the rate limit.
     """
@@ -163,8 +180,10 @@ class GitHubClient:
 
     _http: httpx.AsyncClient = field(init=False)
 
-    _cached: dict[str, tuple[str, bytes]] = field(init=False, default_factory=dict)
-    """Each URL's latest ``ETag`` and content."""
+    _cached: dict[tuple[str, int], _Cached] = field(init=False, default_factory=dict)
+    """The latest response to each list's pages, by path and page number. A
+    page asked for with other parameters, such as a later ``since``, replaces
+    its entry."""
 
     def __post_init__(
         self,
@@ -180,6 +199,7 @@ class GitHubClient:
             },
             timeout=_TIMEOUT,
             transport=transport,
+            follow_redirects=True,
         )
 
     async def __aenter__(self) -> Self:
@@ -188,49 +208,49 @@ class GitHubClient:
     async def __aexit__(self, *exc_info: object) -> None:
         await self._http.aclose()
 
-    async def _get(
-        self,
-        url: str,
-        params: Mapping[str, str] | None = None,
-    ) -> httpx.Response:
-        """GETs ``url`` until it doesn't fail transiently, conditionally on the
-        cached ``ETag``."""
-        request = self._http.build_request('GET', url, params=params)
-        cached = self._cached.get(str(request.url))
-        if cached is not None:
-            request.headers['If-None-Match'] = cached[0]
-
-        outcome = await _utils.http.send_until_settled(
+    async def _send(self, request: httpx.Request) -> httpx.Response:
+        """Sends ``request`` until it doesn't fail transiently."""
+        response = await _utils.http.send_until_settled(
             self._http,
             request,
             is_transient=_is_transient,
-            get_retry_delay=lambda outcome, backoff: _get_retry_delay(
-                outcome,
-                backoff,
-                time.time(),
-            ),
+            get_retry_delay=_get_retry_delay,
             logger=_logger,
         )
-        if outcome.is_error:
-            body = _ErrorBody.model_validate_json(outcome.content or b'{}')
-            raise GitHubError(request.url.path, outcome.status_code, body.message)
-        return outcome
+        if response.is_error:
+            body = _ErrorBody.model_validate_json(response.content or b'{}')
+            raise GitHubError(request.url.path, response.status_code, body.message)
+        return response
 
     async def _get_page(
         self,
-        url: str,
-        params: Mapping[str, str] | None = None,
-    ) -> _Page:
-        response = await self._get(url, params)
-        key = str(response.request.url)
+        path: str,
+        params: Mapping[str, str],
+        page: int,
+    ) -> bytes:
+        """One page of a list, asked for conditionally on its cached ``ETag``."""
+        request = self._http.build_request(
+            'GET',
+            path,
+            params={**params, 'per_page': str(_PAGE_SIZE), 'page': str(page)},
+        )
+        url = str(request.url)
+        cached = self._cached.get((path, page))
+        if cached is not None and cached.url == url:
+            request.headers['If-None-Match'] = cached.etag
+        response = await self._send(request)
         if response.status_code == http.HTTPStatus.NOT_MODIFIED:
-            content = self._cached[key][1]
+            assert cached is not None  # only a conditional request gets a 304
+            content = cached.content
         else:
             content = response.content
             if 'etag' in response.headers:
-                self._cached[key] = (response.headers['etag'], content)
-        next_link = response.links.get('next')
-        return _Page(content=content, next_url=next_link['url'] if next_link else None)
+                self._cached[(path, page)] = _Cached(
+                    url=url,
+                    etag=response.headers['etag'],
+                    content=content,
+                )
+        return content
 
     async def _fetch_all[ModelT: pydantic.BaseModel](
         self,
@@ -238,21 +258,26 @@ class GitHubClient:
         path: str,
         params: Mapping[str, str] | None = None,
     ) -> list[ModelT]:
-        """GETs a paged list, following its ``next`` links to the end."""
-        page = await self._get_page(
-            path,
-            {**(params or {}), 'per_page': str(_PAGE_SIZE)},
-        )
-        items = adapter.validate_json(page.content)
-        while page.next_url is not None:
-            page = await self._get_page(page.next_url)
-            items.extend(adapter.validate_json(page.content))
+        """GETs a paged list page by page, up to its first short page.
+
+        Pages are counted rather than followed by their ``Link`` headers, which
+        GitHub leaves out of a 304.
+        """
+        page = 1
+        batch = adapter.validate_json(await self._get_page(path, params or {}, page))
+        items = list(batch)
+        while len(batch) == _PAGE_SIZE:
+            page += 1
+            batch = adapter.validate_json(
+                await self._get_page(path, params or {}, page),
+            )
+            items.extend(batch)
         return items
 
     async def fetch_time(self) -> datetime:
         """GitHub's clock, from a call that doesn't count against the rate
         limit."""
-        response = await self._get('rate_limit')
+        response = await self._send(self._http.build_request('GET', 'rate_limit'))
         return email.utils.parsedate_to_datetime(response.headers['date'])
 
     async def fetch_issue_comments(
@@ -262,12 +287,12 @@ class GitHubClient:
         *,
         since: datetime,
     ) -> list[IssueComment]:
-        """A pull request's conversation comments updated since ``since``,
-        oldest first."""
+        """A pull request's conversation comments updated at or after
+        ``since``, oldest first."""
         return await self._fetch_all(
             _ISSUE_COMMENTS,
             f'repos/{repo}/issues/{number}/comments',
-            {'since': since.strftime('%Y-%m-%dT%H:%M:%SZ')},
+            {'since': _utils.datetime.to_rfc3339(since)},
         )
 
     async def fetch_reviews(
@@ -282,10 +307,9 @@ class GitHubClient:
         self,
         repo: str,
         number: int,
-        review_id: int,
     ) -> list[ReviewComment]:
-        """One review's comments on the diff."""
+        """Every comment on a pull request's diff, oldest first."""
         return await self._fetch_all(
             _REVIEW_COMMENTS,
-            f'repos/{repo}/pulls/{number}/reviews/{review_id}/comments',
+            f'repos/{repo}/pulls/{number}/comments',
         )

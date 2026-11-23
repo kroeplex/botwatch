@@ -6,6 +6,7 @@ import httpx
 import pydantic
 from botwatch import github
 from botwatch.github import _api
+from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
@@ -30,10 +31,8 @@ def at(second: int) -> datetime:
 class FakeGitHub:
     """One pull request's conversation comments and reviews, answering the
     calls botwatch makes the way GitHub does: oldest first, in pages of
-    ``page_size`` linked by ``Link`` headers, with ``ETag``\\ s that turn a
-    repeated call into a 304."""
-
-    page_size: int = 2
+    ``per_page``, with ``ETag``\\ s that turn a repeated call into a 304,
+    which carries no ``Link`` header."""
 
     now: datetime = field(default_factory=lambda: at(0))
     """GitHub's clock, as the ``Date`` header gives it."""
@@ -48,6 +47,12 @@ class FakeGitHub:
     """Each review's comments, by the review's ID."""
 
     requests: list[httpx.Request] = field(default_factory=list)
+
+    statuses: list[int] = field(default_factory=list)
+    """The status of each response, in order."""
+
+    after_each: Callable[[httpx.Request], None] | None = None
+    """Called after each request is answered, to change things mid-poll."""
 
     _next_id: int = 1
 
@@ -89,6 +94,7 @@ class FakeGitHub:
         self.review_comments[review.id].append(
             _api.ReviewComment(
                 id=self._take_id(),
+                pull_request_review_id=review.id,
                 user=review.user,
                 body=body,
                 path='README.md',
@@ -130,9 +136,18 @@ class FakeGitHub:
             ]
         elif path == f'{_PREFIX}/pulls/{PULL}/reviews':
             items = list(self.reviews)
-        elif path.startswith(f'{_PREFIX}/pulls/{PULL}/reviews/'):
-            review_id = int(path.split('/')[-2])
-            items = list(self.review_comments.get(review_id, []))
+        elif path == f'{_PREFIX}/pulls/{PULL}/comments':
+            submitted = {
+                review.id for review in self.reviews if review.submitted_at is not None
+            }
+            review_comments: list[_api.ReviewComment] = [
+                comment
+                for review_id, comments in self.review_comments.items()
+                if review_id in submitted
+                for comment in comments
+            ]
+            review_comments.sort(key=lambda comment: comment.id)
+            items = list(review_comments)
         else:
             items = None
         return items
@@ -143,7 +158,7 @@ class FakeGitHub:
         items: list[pydantic.BaseModel],
     ) -> httpx.Response:
         page = int(request.url.params.get('page', '1'))
-        size = min(self.page_size, int(request.url.params['per_page']))
+        size = int(request.url.params['per_page'])
         content = pydantic.TypeAdapter(list[pydantic.BaseModel]).dump_json(
             items[(page - 1) * size : page * size],
             serialize_as_any=True,
@@ -153,7 +168,7 @@ class FakeGitHub:
             next_url = request.url.copy_merge_params({'page': str(page + 1)})
             headers['Link'] = f'<{next_url}>; rel="next"'
         return (
-            httpx.Response(304, headers=headers)
+            httpx.Response(304, headers={'ETag': headers['ETag']})
             if request.headers.get('If-None-Match') == headers['ETag']
             else httpx.Response(200, content=content, headers=headers)
         )
@@ -171,6 +186,9 @@ class FakeGitHub:
             response = httpx.Response(404, json={'message': 'Not Found'})
         else:
             response = self._serve_list(request, items)
+        self.statuses.append(response.status_code)
+        if self.after_each is not None:
+            self.after_each(request)
         return response
 
     def create_client(self) -> github.GitHubClient:
