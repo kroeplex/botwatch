@@ -13,6 +13,7 @@ from ._watch import GitHubState
 from ._watch import Repo
 from ._watch import ReviewComment
 from ._watch import ReviewSubmitted
+from ._watch import Time
 from ._watch import watch
 
 __all__ = [
@@ -26,5 +27,6 @@ __all__ = [
     'Repo',
     'ReviewComment',
     'ReviewSubmitted',
+    'Time',
     'watch',
 ]

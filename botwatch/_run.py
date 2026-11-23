@@ -73,9 +73,9 @@ async def run_once(
     clients: _config.Clients,
     out: TextIO,
 ) -> _state.StateFile:
-    """Starts every configured source from its state in ``state``, or from now,
-    selects over them until the run departs, and writes each event to ``out``
-    as a JSON line.
+    """Starts every configured source from its state in ``state``, or else from
+    its ``start_after``, or else from now, selects over them until the run
+    departs, and writes each event to ``out`` as a JSON line.
 
     Returns the state to save: each configured source's state from its last
     update. A source that failed keeps the state of its last update before the

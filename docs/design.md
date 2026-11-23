@@ -208,8 +208,8 @@ Adding a source type means adding:
 - a generator that yields updates;
 - its state model, with a `type` literal, to `SourceState` (`_config.py`);
 - its event models, to the output union (`_run.py`);
-- a config model with a `key` and a `watch(clients, state=…)` method, to
-  `SourceConfig`;
+- a config model with a `key`, a `start_after` and its `start_state`, and a
+  `watch(clients, state=…)` method, to `SourceConfig`;
 - its field in `Defaults`;
 - its client, to `Clients`, created in `_cli.py` with its token;
 - its arguments to `botwatch add`, and a `describe()` on its state for
@@ -222,19 +222,20 @@ by a test, and a change to one is a deliberate decision.
 
 ### Where a run ends never changes what is emitted
 
-For every source whose state has been saved, and given the same activity at
-that source, the events successive runs emit for it form the same sequence
-however each run ends, a crash included, once repeats are dropped by
-`(source, id)` and `botwatch.*` events are ignored. Only a run that ends
-without saving its state, such as a crash, may cause repeats, and no event is
-ever skipped. A GitHub source is held to the same set of events but not to one
+For every source whose state has been saved, or that has a `start_after`, and
+given the same activity at that source, the events successive runs emit for it
+form the same sequence however each run ends, a crash included, once repeats
+are dropped by `(source, id)` and `botwatch.*` events are ignored. Only a run
+that ends without saving its state, such as a crash, may cause repeats, and no
+event is ever skipped. A GitHub source is held to the same set of events but not to one
 order, since GitHub can reveal events out of time order, and its whole-second
 times don't order the events within one second.
 
-A new source's state is first saved by a run that ends normally after the
-source has delivered its first update. Until then, each run starts it from that
-run's own now. The gap between runs observes nothing, so several changes made
-inside it can surface as one, just as they would with a slower poll.
+Without either, a new source's state is first saved by a run that ends
+normally after the source has delivered its first update. Until then, each run
+starts it from that run's own now. The gap between runs observes nothing, so
+several changes made inside it can surface as one, just as they would with a
+slower poll.
 
 Checked by `test_run_once__where_a_run_ends_never_changes_what_is_emitted` in
 `tests/test_run.py`.

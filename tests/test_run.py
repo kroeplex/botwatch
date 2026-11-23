@@ -200,13 +200,37 @@ def _list_github_ids(fake: _fake_github.FakeGitHub) -> list[str]:
     ]
 
 
+def _start_from_saved_state() -> tuple[_config.Config, _state.StateFile]:
+    return _config.Config(sources=(_TOP, _THREAD, _PULL_REQUEST)), _state.StateFile(
+        sources={
+            _TOP.key: slack.SlackState(after=_PARENT),
+            _THREAD.key: slack.SlackState(after=_PARENT),
+            _PULL_REQUEST.key: github.GitHubState(after=_fake_github.at(0)),
+        },
+    )
+
+
+def _start_from_start_after() -> tuple[_config.Config, _state.StateFile]:
+    return (
+        _config.Config(
+            sources=(
+                _TOP.model_copy(update={'start_after': _PARENT}),
+                _THREAD.model_copy(update={'start_after': _PARENT}),
+                _PULL_REQUEST.model_copy(update={'start_after': _fake_github.at(0)}),
+            ),
+        ),
+        _state.StateFile(),
+    )
+
+
 async def _watch_in_runs(
+    start: tuple[_config.Config, _state.StateFile],
     linger: timedelta,
     crash_after: timedelta | None,
 ) -> tuple[list[tuple[str, str, str]], list[str]]:
-    """Runs botwatch again and again while messages, comments and reviews
-    arrive, carrying the state from run to run. Returns every record written,
-    and the IDs of the GitHub events posted.
+    """Runs botwatch again and again from ``start``'s sources and state while
+    messages, comments and reviews arrive, carrying the state from run to run.
+    Returns every record written, and the IDs of the GitHub events posted.
 
     With ``crash_after``, every other run is killed that long after it starts,
     before it can return its state.
@@ -214,17 +238,9 @@ async def _watch_in_runs(
     fake = _fake_slack.FakeSlack()
     fake.post(_PARENT)
     fake_github = _fake_github.FakeGitHub()
-    config = _config.Config(
-        quiet_timeout=timedelta(seconds=0.1),
-        linger=linger,
-        sources=(_TOP, _THREAD, _PULL_REQUEST),
-    )
-    state = _state.StateFile(
-        sources={
-            _TOP.key: slack.SlackState(after=_PARENT),
-            _THREAD.key: slack.SlackState(after=_PARENT),
-            _PULL_REQUEST.key: github.GitHubState(after=_fake_github.at(0)),
-        },
+    sources, state = start
+    config = sources.model_copy(
+        update={'quiet_timeout': timedelta(seconds=0.1), 'linger': linger},
     )
     out = io.StringIO()
 
@@ -261,6 +277,11 @@ async def _watch_in_runs(
 
 
 @pytest.mark.parametrize(
+    'start',
+    [_start_from_saved_state(), _start_from_start_after()],
+    ids=['saved_state', 'start_after'],
+)
+@pytest.mark.parametrize(
     ('linger', 'crash_after'),
     [
         (timedelta(0), None),
@@ -270,12 +291,13 @@ async def _watch_in_runs(
     ],
 )
 async def test_run_once__where_a_run_ends_never_changes_what_is_emitted(
+    start: tuple[_config.Config, _state.StateFile],
     linger: timedelta,
     crash_after: timedelta | None,
 ) -> None:
     """The design spec "Where a run ends never changes what is emitted", in
     ``docs/design.md``."""
-    records, github_ids = await _watch_in_runs(linger, crash_after)
+    records, github_ids = await _watch_in_runs(start, linger, crash_after)
 
     first_seen = list(dict.fromkeys(records))
     assert [id_ for source, _, id_ in first_seen if source == _TOP.key] == [
@@ -379,3 +401,65 @@ async def test_run_once__writes_github_events() -> None:
         after=_fake_github.at(4),
         seen={records[1]['event']['id']: _fake_github.at(4)},
     )
+
+
+async def test_run_once__starts_a_new_source_at_its_start_position() -> None:
+    fake = _fake_slack.FakeSlack()
+    for number in [1, 2, 3]:
+        fake.post(_create_ts(number))
+    fake_github = _fake_github.FakeGitHub(now=_fake_github.at(20))
+    fake_github.comment(1, body='before')
+    in_the_second = fake_github.comment(3, body='in the start position\'s second')
+    new = fake_github.comment(4, body='new')
+    top = _TOP.model_copy(update={'start_after': _create_ts(1)})
+    pull_request = _PULL_REQUEST.model_copy(
+        update={'start_after': _fake_github.at(3) + timedelta(milliseconds=500)},
+    )
+    config = _config.Config(
+        quiet_timeout=timedelta(seconds=5),
+        linger=timedelta(seconds=0.05),
+        sources=(top, pull_request),
+    )
+    out = io.StringIO()
+
+    async with (
+        fake.create_client() as client,
+        fake_github.create_client() as github_client,
+    ):
+        await _run.run_once(
+            config,
+            _state.StateFile(),
+            clients=_clients(client, github_client),
+            out=out,
+        )
+
+    records = _read_records(out)
+    assert [id_ for source, _, id_ in records if source == top.key] == [
+        _create_ts(2),
+        _create_ts(3),
+    ]
+    assert [id_ for source, _, id_ in records if source == pull_request.key] == [
+        f'comment-{in_the_second.id}',
+        f'comment-{new.id}',
+    ]
+
+
+async def test_run_once__resumes_from_saved_state_over_start_after() -> None:
+    fake = _fake_slack.FakeSlack()
+    for number in [1, 2, 3]:
+        fake.post(_create_ts(number))
+    top = _TOP.model_copy(update={'start_after': _create_ts(1)})
+    config = _config.Config(
+        quiet_timeout=timedelta(seconds=5),
+        linger=timedelta(seconds=0.05),
+        sources=(top,),
+    )
+    saved = _state.StateFile(
+        sources={top.key: slack.SlackState(after=_create_ts(2))},
+    )
+    out = io.StringIO()
+
+    async with fake.create_client() as client:
+        await _run.run_once(config, saved, clients=_clients(client), out=out)
+
+    assert [id_ for _, _, id_ in _read_records(out)] == [_create_ts(3)]

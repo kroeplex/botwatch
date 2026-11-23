@@ -372,6 +372,50 @@ class Test_main__add:
         )
 
     @pytest.mark.parametrize(
+        ('arguments', 'position', 'written'),
+        [
+            (['slack', 'C1'], '1785600000.000300', "'1785600000.000300'"),
+            (
+                ['github', 'o/r#1'],
+                '2026-08-01T18:00:00+02:00',
+                "'2026-08-01T16:00:00.000Z'",
+            ),
+        ],
+    )
+    def test__sets_a_start_position(
+        self,
+        arguments: list[str],
+        position: str,
+        written: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = tmp_path / 'watch.yaml'
+
+        _invoke(capsys, 'add', '--config', path, *arguments, '--start-after', position)
+
+        assert f'  start_after: {written}\n' in path.read_text()
+
+    @pytest.mark.parametrize(
+        'arguments',
+        [
+            ['slack', 'C1', '--start-after', '2026-08-01T16:00:00Z'],
+            ['github', 'o/r#1', '--start-after', 'yesterday'],
+            ['github', 'o/r#1', '--start-after', '20260801'],
+            ['github', 'o/r#1', '--start-after', '1785600000.000300'],
+        ],
+    )
+    def test__fails_on_a_bad_start_position(
+        self,
+        arguments: list[str],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        err = _fail(capsys, 'add', '--config', tmp_path / 'watch.yaml', *arguments)
+
+        assert 'bad source' in err
+
+    @pytest.mark.parametrize(
         ('arguments', 'message'),
         [
             (['github', 'octo-org/octo-repo'], 'not a pull request'),
@@ -723,6 +767,16 @@ class Test_main__show:
         _invoke(capsys, 'add', '--config', config_path, 'slack', 'C1')
         _invoke(capsys, 'add', '--config', config_path, 'slack', 'C2')
         _invoke(capsys, 'add', '--config', config_path, 'slack', 'C3')
+        _invoke(
+            capsys,
+            'add',
+            '--config',
+            config_path,
+            'slack',
+            'C4',
+            '--start-after',
+            '1785600000.000300',
+        )
         state_path = tmp_path / 'state.yaml'
         _save_state(
             state_path,
@@ -747,6 +801,7 @@ class Test_main__show:
             '  slack:C1  every 30s  after 2026-08-01 16:00:00 UTC\n'
             '  slack:C2  every 30s  from the beginning\n'
             '  slack:C3  every 30s  starts from now on its next run\n'
+            '  slack:C4  every 30s  starts after 2026-08-01 16:00:00 UTC on its next run\n'
             f'In {state_path} but no longer configured, dropped on the next run:\n'
             '  slack:C0OLD\n'
         )
@@ -812,6 +867,7 @@ class Test_main__show:
                         'thread_ts': None,
                         'poll_interval': '30s',
                         'exclude': [],
+                        'start_after': None,
                     },
                     'state': {'type': 'slack', 'after': '1785600000.000200'},
                 },
@@ -830,6 +886,7 @@ class Test_main__show:
                                 'text': None,
                             },
                         ],
+                        'start_after': None,
                     },
                     'state': None,
                 },

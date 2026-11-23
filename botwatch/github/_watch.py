@@ -2,12 +2,14 @@
 
 import asyncio
 import pydantic
+import re
 from .. import _source
 from .. import _utils
 from . import _api
 from collections.abc import Sequence
 from datetime import datetime
 from datetime import timedelta
+from datetime import timezone
 from typing import Annotated
 from typing import Literal
 
@@ -25,10 +27,23 @@ timestamps don't follow the order in which events become visible, and a poll
 lists them in several calls."""
 
 
-type _Time = Annotated[
+def _reject_number(value: object) -> object:
+    """Keeps a number, which pydantic would read as a Unix time, from passing
+    for a time."""
+    if isinstance(value, (int, float)) or (
+        isinstance(value, str) and re.fullmatch(r'[\d.]+', value)
+    ):
+        raise ValueError(f'not a time such as 2026-08-01T16:00:00Z: {value}')
+    return value
+
+
+type Time = Annotated[
     pydantic.AwareDatetime,
+    pydantic.BeforeValidator(_reject_number),
+    pydantic.AfterValidator(lambda time: time.astimezone(timezone.utc)),
     pydantic.PlainSerializer(_utils.datetime.to_rfc3339, when_used='json'),
 ]
+"""A time by GitHub's clock, in UTC, written in RFC 3339."""
 
 
 class GitHubState(pydantic.BaseModel):
@@ -43,11 +58,11 @@ class GitHubState(pydantic.BaseModel):
 
     type: Literal['github'] = 'github'
 
-    after: _Time
+    after: Time
     """The source reports only events at or after this time, by GitHub's
     clock."""
 
-    seen: dict[str, _Time] = pydantic.Field(default_factory=dict)
+    seen: dict[str, Time] = pydantic.Field(default_factory=dict)
     """The events at or after ``after`` already reported: each one's ID, and
     its time."""
 
