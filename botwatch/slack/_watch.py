@@ -30,6 +30,14 @@ class SlackState(pydantic.BaseModel):
     after: _ts.SlackTs
     """The source reports only messages after this ``ts``."""
 
+    def describe(self) -> str:
+        """Where the source is up to, for people."""
+        return (
+            'from the beginning'
+            if self.after == _ts.EPOCH
+            else f'after {_ts.ts_to_datetime(self.after):%Y-%m-%d %H:%M:%S} UTC'
+        )
+
 
 class MessagePosted(_source.Event):
     """A message was posted to a conversation's top level, or to a thread."""
