@@ -1,6 +1,6 @@
 [project]
 name = 'botwatch'
-version = '0.1.0'
+version = '0.2.0'
 description = 'A one-shot select over many event sources, for agents.'
 readme = 'README.md'
 license = 'Apache-2.0'

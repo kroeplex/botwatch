@@ -9,6 +9,13 @@
 
 ## [Unreleased]
 
+## <span id="0-2-0" /> [0.2.0](https://github.com/kroeplex/botwatch/compare/0.1.0...0.2.0) - 2026-11-23
+
+### Changes
+
+* Keep pyproject's quoting when a release sets the version ([#33](https://github.com/kroeplex/botwatch/pull/33))
+* Wake on pushes and state changes to a watched pull request ([#34](https://github.com/kroeplex/botwatch/pull/34))
+
 ## <span id="0-1-0" /> [0.1.0](https://github.com/kroeplex/botwatch/releases/tag/0.1.0) - 2026-11-23
 
 The first release of botwatch: one command an AI agent runs instead of
