@@ -165,13 +165,17 @@ _PULL_REQUEST = _config.GitHubSourceConfig(
 )
 
 
+_PUSHED_HEAD = 'c' * 40
+
+
 async def _post_to_github_over_time(
     fake: _fake_github.FakeGitHub,
     count: int,
 ) -> None:
     """Posts ``count`` comments and reviews 20ms apart, as GitHub's clock moves
     on 20s each time. One step posts two in the same second, one comment is
-    revealed after a newer event, and a review started before them all is
+    revealed after a newer event, one step pushes and one marks the pull
+    request ready for review, and a review started before them all is
     submitted last."""
     early = fake.start_review()
     fake.add_review_comment(early, 'started first')
@@ -186,11 +190,17 @@ async def _post_to_github_over_time(
             fake.review(20 * number)
         if number == 4:
             fake.comment(20 * number, body='in the same second')
+        if number == 8:
+            fake.push(20 * number, _PUSHED_HEAD)
+        if number == 10:
+            fake.act(20 * number, 'ready_for_review')
     fake.submit(early, 20 * count, body='submitted last')
 
 
 def _list_github_ids(fake: _fake_github.FakeGitHub) -> list[str]:
     return [
+        f'head-{_fake_github.FakeGitHub().head}-{_PUSHED_HEAD}',
+        *(f'event-{event.id}' for event in fake.issue_events),
         *(f'comment-{comment.id}' for comment in fake.comments),
         *(
             f'review-{review.id}'
@@ -205,7 +215,10 @@ def _start_from_saved_state() -> tuple[_config.Config, _state.StateFile]:
         sources={
             _TOP.key: slack.SlackState(after=_PARENT),
             _THREAD.key: slack.SlackState(after=_PARENT),
-            _PULL_REQUEST.key: github.GitHubState(after=_fake_github.at(0)),
+            _PULL_REQUEST.key: github.GitHubState(
+                after=_fake_github.at(0),
+                head=_fake_github.FakeGitHub().head,
+            ),
         },
     )
 
@@ -400,6 +413,7 @@ async def test_run_once__writes_github_events() -> None:
     assert state.sources[source.key] == github.GitHubState(
         after=_fake_github.at(4),
         seen={records[1]['event']['id']: _fake_github.at(4)},
+        head=fake_github.head,
     )
 
 

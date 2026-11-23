@@ -92,6 +92,41 @@ class ReviewComment(pydantic.BaseModel):
     html_url: str
 
 
+class _Ref(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(frozen=True)
+
+    sha: str
+
+
+class PullRequest(pydantic.BaseModel):
+    """A pull request, reduced to the fields botwatch reads."""
+
+    model_config = pydantic.ConfigDict(frozen=True)
+
+    head: _Ref
+    updated_at: datetime
+    html_url: str
+
+
+class IssueEvent(pydantic.BaseModel):
+    """Something done to a pull request, such as closing it, as its issue
+    events list it."""
+
+    model_config = pydantic.ConfigDict(frozen=True)
+
+    id: int
+    event: str
+    """Such as ``closed``, ``merged``, ``reopened`` or ``labeled``."""
+
+    actor: User | None
+    created_at: datetime
+
+
+class _Commit(pydantic.BaseModel):
+    author: User | None
+    """The GitHub account of the commit's author, when GitHub can match one."""
+
+
 class _ErrorBody(pydantic.BaseModel):
     message: str = ''
 
@@ -99,6 +134,7 @@ class _ErrorBody(pydantic.BaseModel):
 _ISSUE_COMMENTS = pydantic.TypeAdapter(list[IssueComment])
 _REVIEWS = pydantic.TypeAdapter(list[Review])
 _REVIEW_COMMENTS = pydantic.TypeAdapter(list[ReviewComment])
+_ISSUE_EVENTS = pydantic.TypeAdapter(list[IssueEvent])
 
 _SECONDARY_LIMIT_WAIT = 60.0
 """Seconds to wait at least on a secondary rate limit that names no wait, as
@@ -180,10 +216,13 @@ class GitHubClient:
 
     _http: httpx.AsyncClient = field(init=False)
 
-    _cached: dict[tuple[str, int], _Cached] = field(init=False, default_factory=dict)
-    """The latest response to each list's pages, by path and page number. A
-    page asked for with other parameters, such as a later ``since``, replaces
-    its entry."""
+    _cached: dict[tuple[str, int | None], _Cached] = field(
+        init=False,
+        default_factory=dict,
+    )
+    """The latest response to each object, and each list's pages, by path and
+    page number. A page asked for with other parameters, such as a later
+    ``since``, replaces its entry."""
 
     def __post_init__(
         self,
@@ -222,18 +261,18 @@ class GitHubClient:
             raise GitHubError(request.url.path, response.status_code, body.message)
         return response
 
-    async def _get_page(
+    async def _get_conditionally(
         self,
         path: str,
         params: Mapping[str, str],
-        page: int,
+        page: int | None = None,
     ) -> bytes:
-        """One page of a list, asked for conditionally on its cached ``ETag``."""
-        request = self._http.build_request(
-            'GET',
-            path,
-            params={**params, 'per_page': str(_PAGE_SIZE), 'page': str(page)},
+        """An object, or one page of a list, asked for conditionally on its
+        cached ``ETag``."""
+        paging = (
+            {'per_page': str(_PAGE_SIZE), 'page': str(page)} if page is not None else {}
         )
+        request = self._http.build_request('GET', path, params={**params, **paging})
         url = str(request.url)
         cached = self._cached.get((path, page))
         if cached is not None and cached.url == url:
@@ -264,12 +303,14 @@ class GitHubClient:
         GitHub leaves out of a 304.
         """
         page = 1
-        batch = adapter.validate_json(await self._get_page(path, params or {}, page))
+        batch = adapter.validate_json(
+            await self._get_conditionally(path, params or {}, page),
+        )
         items = list(batch)
         while len(batch) == _PAGE_SIZE:
             page += 1
             batch = adapter.validate_json(
-                await self._get_page(path, params or {}, page),
+                await self._get_conditionally(path, params or {}, page),
             )
             items.extend(batch)
         return items
@@ -302,6 +343,36 @@ class GitHubClient:
     ) -> list[Review]:
         """A pull request's reviews, oldest first."""
         return await self._fetch_all(_REVIEWS, f'repos/{repo}/pulls/{number}/reviews')
+
+    async def fetch_pull_request(
+        self,
+        repo: str,
+        number: int,
+    ) -> PullRequest:
+        return PullRequest.model_validate_json(
+            await self._get_conditionally(f'repos/{repo}/pulls/{number}', {}),
+        )
+
+    async def fetch_issue_events(
+        self,
+        repo: str,
+        number: int,
+    ) -> list[IssueEvent]:
+        """What has been done to a pull request, such as closing it, oldest
+        first."""
+        return await self._fetch_all(
+            _ISSUE_EVENTS,
+            f'repos/{repo}/issues/{number}/events',
+        )
+
+    async def fetch_commit_author(self, repo: str, sha: str) -> str | None:
+        """The login of a commit's author, or ``None`` when GitHub can't match
+        the commit to an account."""
+        response = await self._send(
+            self._http.build_request('GET', f'repos/{repo}/commits/{sha}'),
+        )
+        author = _Commit.model_validate_json(response.content).author
+        return author.login if author is not None else None
 
     async def fetch_review_comments(
         self,

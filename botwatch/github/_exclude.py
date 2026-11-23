@@ -4,6 +4,7 @@ import pydantic
 import re
 from . import _watch
 from typing import Self
+from typing import assert_never
 
 
 class ExcludeRule(pydantic.BaseModel):
@@ -18,7 +19,8 @@ class ExcludeRule(pydantic.BaseModel):
     text: re.Pattern[str] | None = None
     """A regular expression, searched for anywhere in the comment's or review's
     Markdown body. A review with comments but no body, such as a lone reply on
-    the diff, matches when every one of its comments does. Anchor it with ``^``; set
+    the diff, matches when every one of its comments does. A head or state
+    change has no text, so it never matches. Anchor it with ``^``; set
     flags inline, such as ``(?i)``."""
 
     @pydantic.model_validator(mode='after')
@@ -29,15 +31,18 @@ class ExcludeRule(pydantic.BaseModel):
         return self
 
     def _matches_text(self, event: _watch.GitHubEvent) -> bool:
-        bodies = (
-            [comment.body for comment in event.comments]
-            if isinstance(event, _watch.ReviewSubmitted)
-            and not event.body
-            and event.comments
-            else [event.body]
-        )
-        return self.text is None or all(
-            self.text.search(body) is not None for body in bodies
+        bodies: list[str]
+        match event:
+            case _watch.ReviewSubmitted() if not event.body and event.comments:
+                bodies = [comment.body for comment in event.comments]
+            case _watch.CommentPosted() | _watch.ReviewSubmitted():
+                bodies = [event.body]
+            case _watch.HeadChanged() | _watch.StateChanged():
+                bodies = []
+            case _:
+                assert_never(event)
+        return self.text is None or (
+            bool(bodies) and all(self.text.search(body) is not None for body in bodies)
         )
 
     def matches(self, event: _watch.GitHubEvent) -> bool:

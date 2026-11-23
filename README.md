@@ -133,7 +133,7 @@ sources:
       - user: U0123BOT             # every field in a rule must match
         text: '^\[op 1\]'          # a regex over Slack's raw message text
   - type: github
-    repo: octo-org/octo-repo       # a pull request's comments and reviews
+    repo: octo-org/octo-repo       # a pull request's comments, reviews, pushes and state
     pull: 26
     start_after: '2026-08-01T16:00:00Z' # optional: likewise, a time
     exclude:
@@ -155,10 +155,11 @@ or when its first message is older than the conversation's latest 200 messages.
 Slack rate-limits each method to about 50 calls a minute per app, so with many
 busy or old threads, raise `poll_interval` or prune the watch set.
 
-A GitHub source reports a pull request's conversation comments, and each
-submitted review with its comments on the diff. A lone reply on the diff is a
-review too. Its polls are conditional requests, so a poll that finds nothing new
-doesn't count against GitHub's rate limit.
+A GitHub source reports a pull request's conversation comments, each
+submitted review with its comments on the diff (a lone reply on the diff is a
+review too), each push that moves its head, and each merge, close, reopen, and
+switch between draft and ready for review. Its polls are conditional requests,
+so a poll that finds nothing new doesn't count against GitHub's rate limit.
 
 A source's identity is derived from what it watches, such as
 `slack:C0123456789/1785600000.000200`, so the state file needs no migration as
@@ -198,15 +199,17 @@ Each event is one JSON line, flushed as it's written:
 | Field | Meaning |
 | --- | --- |
 | `source` | Which source it came from. |
-| `event.type` | What happened: `slack.message_posted`, `github.comment_posted`, `github.review_submitted`, or `botwatch.source_failed`. |
+| `event.type` | What happened: `slack.message_posted`; `github.comment_posted`, `github.review_submitted`, `github.head_changed` or `github.state_changed`; or `botwatch.source_failed`. |
 | `event.id` | Unique within its source and stable across runs. Dedupe on `(source, id)`. |
 | `event.time` | When it happened at the source. |
 
 Each event type then carries its own fields: for Slack, `conversation`, `ts`,
 `thread_ts`, `user`, `bot_id`, `username`, `subtype` and `text`; for GitHub,
-`repo`, `pull`, `user`, `body` and `url`, plus a review's `state` and
-`comments`, each with its `path` and `line`; for `botwatch.source_failed`,
-`error`, what the source raised. Diagnostics go to stderr. The exit status is 0
+`repo`, `pull`, `user` and `url`, plus a comment's or review's `body`, a
+review's `state` and `comments` (each with its `path` and `line`), a head
+change's `before` and `after` SHAs, and a state change's `state` (`merged`,
+`closed`, `reopened`, `ready_for_review` or `converted_to_draft`); for
+`botwatch.source_failed`, `error`, what the source raised. Diagnostics go to stderr. The exit status is 0
 after a normal run, and 2 for a bad config, state file or environment.
 
 ## Using it from Python
@@ -226,8 +229,8 @@ The same pieces work as a library: sources are async generators, and
 ## Status
 
 Early, but working: new messages in Slack conversations and threads, and new
-comments and reviews on GitHub pull requests. Edits, deletions and reactions
-aren't reported yet, nor are a pull request's pushes, checks or merge. Retiring
+comments, reviews, pushes and state changes on GitHub pull requests. Edits,
+deletions and reactions aren't reported yet, nor are check runs. Expiring
 sources that have gone quiet is next.
 
 ## License

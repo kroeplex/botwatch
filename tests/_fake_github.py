@@ -3,6 +3,7 @@
 import email.utils
 import hashlib
 import httpx
+import json
 import pydantic
 from botwatch import github
 from botwatch.github import _api
@@ -29,9 +30,9 @@ def at(second: int) -> datetime:
 
 @dataclass
 class FakeGitHub:
-    """One pull request's conversation comments and reviews, answering the
-    calls botwatch makes the way GitHub does: oldest first, in pages of
-    ``per_page``, with ``ETag``\\ s that turn a repeated call into a 304,
+    """One pull request's comments, reviews, head and issue events, answering
+    the calls botwatch makes the way GitHub does: lists oldest first, in pages
+    of ``per_page``, with ``ETag``\\ s that turn a repeated call into a 304,
     which carries no ``Link`` header."""
 
     now: datetime = field(default_factory=lambda: at(0))
@@ -45,6 +46,16 @@ class FakeGitHub:
         default_factory=dict,
     )
     """Each review's comments, by the review's ID."""
+
+    head: str = 'a' * 40
+    """The head commit's SHA."""
+
+    updated_at: datetime = field(default_factory=lambda: at(0))
+
+    commit_authors: dict[str, str | None] = field(default_factory=dict)
+    """Each pushed commit's author's login, by SHA."""
+
+    issue_events: list[_api.IssueEvent] = field(default_factory=list)
 
     requests: list[httpx.Request] = field(default_factory=list)
 
@@ -126,6 +137,50 @@ class FakeGitHub:
     ) -> None:
         self.submit(self.start_review(user=user), second, state=state, body=body)
 
+    def push(self, second: int, sha: str, *, user: str | None = 'octocat') -> None:
+        """Moves the head to ``sha``, authored by ``user``."""
+        self.head = sha
+        self.updated_at = at(second)
+        self.commit_authors[sha] = user
+
+    def act(self, second: int, event: str, *, user: str = 'maintainer') -> None:
+        """Records an issue event, such as ``merged`` or ``labeled``."""
+        self.issue_events.append(
+            _api.IssueEvent(
+                id=self._take_id(),
+                event=event,
+                actor=_api.User(login=user),
+                created_at=at(second),
+            ),
+        )
+
+    def _serve_object(self, request: httpx.Request) -> httpx.Response | None:
+        """The pull request or a commit, or ``None`` for any other path."""
+        path = request.url.path
+        document: dict[str, object] | None
+        if path == f'{_PREFIX}/pulls/{PULL}':
+            document = {
+                'head': {'sha': self.head},
+                'updated_at': self.updated_at.isoformat(),
+                'html_url': f'https://github.com/{REPO}/pull/{PULL}',
+            }
+        elif path.startswith(f'{_PREFIX}/commits/'):
+            login = self.commit_authors.get(path.rsplit('/', 1)[-1])
+            document = {'author': {'login': login} if login is not None else None}
+        else:
+            document = None
+        content = json.dumps(document).encode() if document is not None else b''
+        etag = f'"{hashlib.sha1(content).hexdigest()}"'
+        return (
+            None
+            if document is None
+            else (
+                httpx.Response(304, headers={'ETag': etag})
+                if request.headers.get('If-None-Match') == etag
+                else httpx.Response(200, content=content, headers={'ETag': etag})
+            )
+        )
+
     def _list(self, request: httpx.Request) -> list[pydantic.BaseModel] | None:
         path = request.url.path
         items: list[pydantic.BaseModel] | None
@@ -136,6 +191,8 @@ class FakeGitHub:
             ]
         elif path == f'{_PREFIX}/pulls/{PULL}/reviews':
             items = list(self.reviews)
+        elif path == f'{_PREFIX}/issues/{PULL}/events':
+            items = list(self.issue_events)
         elif path == f'{_PREFIX}/pulls/{PULL}/comments':
             submitted = {
                 review.id for review in self.reviews if review.submitted_at is not None
@@ -176,7 +233,10 @@ class FakeGitHub:
     def _handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         items = self._list(request)
-        if request.url.path == '/rate_limit':
+        served = self._serve_object(request)
+        if served is not None:
+            response = served
+        elif request.url.path == '/rate_limit':
             response = httpx.Response(
                 200,
                 json={},

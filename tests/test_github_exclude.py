@@ -49,3 +49,20 @@ def test_ExcludeRule__matches(
     matches: bool,
 ) -> None:
     assert rule.matches(review) is matches
+
+
+_PUSH = github.HeadChanged(
+    id='head-a-b',
+    time=_fake_github.at(1),
+    repo=_fake_github.REPO,
+    pull=_fake_github.PULL,
+    user='Octo-Bot',
+    before='a',
+    after='b',
+    url='https://github.com/',
+)
+
+
+def test_ExcludeRule__matches_a_push_by_user_but_never_by_text() -> None:
+    assert github.ExcludeRule(user='octo-bot').matches(_PUSH)
+    assert not github.ExcludeRule(text=re.compile('.*')).matches(_PUSH)
