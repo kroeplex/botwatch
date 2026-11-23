@@ -84,6 +84,15 @@ never get this far: the API client retries them.
 **Delivery** is at-least-once. Because the state is written only after a run
 ends normally, a crashed run's events are repeated by the next run.
 
+## Editing the watch set
+
+`botwatch add` and `botwatch remove` load the config, change its sources
+(`Config.with_source`, `Config.without`), and write it back atomically with
+every default left out. They never touch the state file: since keys derive from
+what a source watches, an added source has no entry until a run saves one, and
+a removed source's entry is dropped by the next run's save. `botwatch show`
+reads both files and changes neither.
+
 ## The Slack source
 
 `slack.watch(client, conversation, state=…, thread_ts=…, poll_interval=…)`
@@ -147,10 +156,11 @@ set in it matches, and a message is skipped when any rule matches.
 | `_source.py` | `Event`, `Update`, `Source` |
 | `_select.py` | `select`, and the private `_linger` timing combinator |
 | `_exclude.py` | `exclude_events` |
-| `_config.py` | The config models: durations, source keys, `SlackSourceConfig` |
-| `_state.py` | `StateFile` and the atomic write |
+| `_config.py` | The config models: durations, source keys, `SlackSourceConfig`, and the edits `add` and `remove` make |
+| `_state.py` | `StateFile` |
 | `_run.py` | `run_once`, the output `Record` and `SourceFailed` |
-| `_cli.py` | The `botwatch` command |
+| `_cli.py` | The `botwatch` command: `run`, `add`, `remove` and `show` |
+| `_utils/` | Datetime formatting and the atomic file write |
 | `slack/` | The Slack client, timestamps, the source and `ExcludeRule` |
 
 Adding a source type means adding:
@@ -159,7 +169,9 @@ Adding a source type means adding:
 - its event models, to the output union (`_run.py`);
 - a config model with a `key` and a `watch(client, state=…)` method, to
   `Config.sources`;
-- its client, created in `_cli.py` and passed through `run_once`.
+- its client, created in `_cli.py` and passed through `run_once`;
+- its arguments to `botwatch add`, and a `describe()` on its state for
+  `botwatch show`.
 
 ## Design specs
 

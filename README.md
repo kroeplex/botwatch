@@ -100,6 +100,10 @@ when the command exits, and costs nothing while it waits.
 - **Don't wake yourself.** If the agent posts to the conversations it watches,
   skip its own messages with `exclude` (below). Otherwise every reply it sends
   wakes it again.
+- **Let it manage its own watch set.** Have the agent run `botwatch add`,
+  `remove` and `show --json` rather than edit the YAML: they validate as they
+  go. Add a source before starting the run that should watch it, since a run
+  reads its config once, as it starts.
 
 ## Configuration
 
@@ -141,10 +145,20 @@ has its state dropped on the next run.
 ### Growing and pruning the watch set
 
 Long-running agents keep joining new threads, and eventually stop caring about
-old ones. For now that means editing the YAML.
+old ones. `add` and `remove` edit the config, and `show` lists what's watched
+and how far each source has got:
 
-> **Coming soon:** CLI commands to add, remove and list sources, and to inspect
-> a config or state file, so neither agents nor humans have to hand-edit YAML.
+```console
+$ botwatch add --config watch.yaml slack C0123456789 --thread 1785600000.000200
+added slack:C0123456789/1785600000.000200
+$ botwatch remove --config watch.yaml slack:C0123456789/1785600000.000200
+removed slack:C0123456789/1785600000.000200
+$ botwatch show --config watch.yaml --state state.yaml
+quiet_timeout 55m, linger 5s
+  slack:C0123456789  every 30s  after 2026-08-01 16:02:03 UTC
+```
+
+Neither touches the state file. See the [CLI reference](docs/cli.md).
 
 ## Output
 
@@ -184,8 +198,8 @@ The same pieces work as a library: Slack sources are async generators, and
 ## Status
 
 Early, but working: new messages in Slack conversations and threads. Edits,
-deletions and reactions aren't reported yet. GitHub pull requests, retiring
-sources that have gone quiet, and a CLI for managing the watch set are next.
+deletions and reactions aren't reported yet. GitHub pull requests and retiring
+sources that have gone quiet are next.
 
 ## License
 
