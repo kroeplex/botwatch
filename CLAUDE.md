@@ -14,11 +14,10 @@ conflict.
 
 `botwatch` is a **one-shot `select` over many event sources**, meant to be
 executed by an agent that needs to react to the outside world without doing its
-own cursor bookkeeping. It loads a config of channels plus a state file, blocks
-until events arrive or a timeout elapses, emits the new events on stdout,
-advances the state, and exits. See the [README](README.md) for the shape of it
-and the [issue tracker](docs/issues/README.md), where the design is being
-written up.
+own cursor bookkeeping. It loads a config of sources plus an optional state
+file, blocks until events arrive or a timeout elapses, emits the new events on
+stdout, advances the state, and exits. See the [README](README.md) for the shape
+of it and the design proposal, [0015](docs/issues/0015.md).
 
 The repo is currently **design-stage**: no implementation yet.
 
@@ -43,12 +42,12 @@ The repo is currently **design-stage**: no implementation yet.
 - **Language: Python**, chosen for the paved path across Kroeplex rather than
   for performance. Startup latency is dwarfed by the time spent waiting on the
   sources being watched, and a port to a compiled language stays open. Design
-  documents should stay **implementation-agnostic** — pseudo-code for
-  illustration, not Python-specific contracts.
-- **"Channel" is overloaded, and the ambiguity is dangerous here.** In this
-  repo it means a stream of events in the concurrency sense — the thing you
-  `select` over. A Slack channel is one kind of botwatch channel. Say "Slack
-  channel" whenever you mean that.
+  documents may name the Python constructs the design rests on, such as async
+  generators and turbopipes. Beyond those, they describe behaviour; any code is
+  a labelled sketch.
+- **A *source* is one thing being watched**: a Slack conversation's top level,
+  or one Slack thread. botwatch only reads from it. Don't use "channel" for a
+  source; say "Slack channel" when you mean one.
 - **Issue tracker:** [`docs/issues/`](docs/issues/); regenerate its index with
   `scripts/render_issues`.
 
