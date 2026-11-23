@@ -59,10 +59,21 @@ _PUSH = github.HeadChanged(
     user='Octo-Bot',
     before='a',
     after='b',
+    message='[bot] Fix it',
     url='https://github.com/',
 )
 
 
-def test_ExcludeRule__matches_a_push_by_user_but_never_by_text() -> None:
-    assert github.ExcludeRule(user='octo-bot').matches(_PUSH)
-    assert not github.ExcludeRule(text=re.compile('.*')).matches(_PUSH)
+@pytest.mark.parametrize(
+    ('rule', 'matches'),
+    [
+        (github.ExcludeRule(user='octo-bot'), True),
+        (github.ExcludeRule(text=re.compile(r'^\[bot\]')), True),
+        (github.ExcludeRule(user='octo-bot', text=re.compile('^human')), False),
+    ],
+)
+def test_ExcludeRule__matches_a_push_by_committer_and_message(
+    rule: github.ExcludeRule,
+    matches: bool,
+) -> None:
+    assert rule.matches(_PUSH) is matches

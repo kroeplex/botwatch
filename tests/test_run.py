@@ -191,7 +191,7 @@ async def _post_to_github_over_time(
         if number == 4:
             fake.comment(20 * number, body='in the same second')
         if number == 8:
-            fake.push(20 * number, _PUSHED_HEAD)
+            fake.push(_PUSHED_HEAD)
         if number == 10:
             fake.act(20 * number, 'ready_for_review')
     fake.submit(early, 20 * count, body='submitted last')
@@ -199,7 +199,7 @@ async def _post_to_github_over_time(
 
 def _list_github_ids(fake: _fake_github.FakeGitHub) -> list[str]:
     return [
-        f'head-{_fake_github.FakeGitHub().head}-{_PUSHED_HEAD}',
+        f'head-1-{_PUSHED_HEAD}',
         *(f'event-{event.id}' for event in fake.issue_events),
         *(f'comment-{comment.id}' for comment in fake.comments),
         *(
@@ -217,7 +217,7 @@ def _start_from_saved_state() -> tuple[_config.Config, _state.StateFile]:
             _THREAD.key: slack.SlackState(after=_PARENT),
             _PULL_REQUEST.key: github.GitHubState(
                 after=_fake_github.at(0),
-                head=_fake_github.FakeGitHub().head,
+                head=_fake_github.HEAD,
             ),
         },
     )

@@ -92,22 +92,6 @@ class ReviewComment(pydantic.BaseModel):
     html_url: str
 
 
-class _Ref(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(frozen=True)
-
-    sha: str
-
-
-class PullRequest(pydantic.BaseModel):
-    """A pull request, reduced to the fields botwatch reads."""
-
-    model_config = pydantic.ConfigDict(frozen=True)
-
-    head: _Ref
-    updated_at: datetime
-    html_url: str
-
-
 class IssueEvent(pydantic.BaseModel):
     """Something done to a pull request, such as closing it, as its issue
     events list it."""
@@ -122,9 +106,28 @@ class IssueEvent(pydantic.BaseModel):
     created_at: datetime
 
 
-class _Commit(pydantic.BaseModel):
-    author: User | None
-    """The GitHub account of the commit's author, when GitHub can match one."""
+class _CommitDetails(pydantic.BaseModel):
+    message: str
+
+
+class Commit(pydantic.BaseModel):
+    """A commit, reduced to the fields botwatch reads."""
+
+    model_config = pydantic.ConfigDict(frozen=True)
+
+    commit: _CommitDetails
+
+    committer: User | None
+    """The GitHub account of whoever committed it, when GitHub can match
+    one. A commit GitHub made, such as one from its web editor, is
+    ``web-flow``'s."""
+
+    @property
+    def message(self) -> str:
+        return self.commit.message
+
+
+_COMMITS = pydantic.TypeAdapter(list[Commit])
 
 
 class _ErrorBody(pydantic.BaseModel):
@@ -266,13 +269,20 @@ class GitHubClient:
         path: str,
         params: Mapping[str, str],
         page: int | None = None,
+        *,
+        accept: str | None = None,
     ) -> bytes:
         """An object, or one page of a list, asked for conditionally on its
-        cached ``ETag``."""
+        cached ``ETag``, in the media type ``accept`` names if given."""
         paging = (
             {'per_page': str(_PAGE_SIZE), 'page': str(page)} if page is not None else {}
         )
-        request = self._http.build_request('GET', path, params={**params, **paging})
+        request = self._http.build_request(
+            'GET',
+            path,
+            params={**params, **paging},
+            headers={'Accept': accept} if accept is not None else None,
+        )
         url = str(request.url)
         cached = self._cached.get((path, page))
         if cached is not None and cached.url == url:
@@ -344,14 +354,16 @@ class GitHubClient:
         """A pull request's reviews, oldest first."""
         return await self._fetch_all(_REVIEWS, f'repos/{repo}/pulls/{number}/reviews')
 
-    async def fetch_pull_request(
-        self,
-        repo: str,
-        number: int,
-    ) -> PullRequest:
-        return PullRequest.model_validate_json(
-            await self._get_conditionally(f'repos/{repo}/pulls/{number}', {}),
+    async def fetch_head(self, repo: str, number: int) -> str:
+        """The SHA of a pull request's head commit, asked for in a form whose
+        ``ETag`` changes only when the head does, so an unchanged head costs
+        a free 304."""
+        content = await self._get_conditionally(
+            f'repos/{repo}/commits/refs/pull/{number}/head',
+            {},
+            accept='application/vnd.github.sha',
         )
+        return content.decode().strip()
 
     async def fetch_issue_events(
         self,
@@ -365,14 +377,16 @@ class GitHubClient:
             f'repos/{repo}/issues/{number}/events',
         )
 
-    async def fetch_commit_author(self, repo: str, sha: str) -> str | None:
-        """The login of a commit's author, or ``None`` when GitHub can't match
-        the commit to an account."""
+    async def fetch_commit(self, repo: str, sha: str) -> Commit:
+        """A commit, listed on its own so as to leave out its diff."""
         response = await self._send(
-            self._http.build_request('GET', f'repos/{repo}/commits/{sha}'),
+            self._http.build_request(
+                'GET',
+                f'repos/{repo}/commits',
+                params={'sha': sha, 'per_page': '1'},
+            ),
         )
-        author = _Commit.model_validate_json(response.content).author
-        return author.login if author is not None else None
+        return _COMMITS.validate_json(response.content)[0]
 
     async def fetch_review_comments(
         self,

@@ -70,6 +70,10 @@ class GitHubState(pydantic.BaseModel):
     """The pull request's head commit when last polled. ``None`` until the
     source records it as it starts, which reports no head change."""
 
+    head_changes: int = 0
+    """How many head changes the source has reported, which numbers each one
+    so that no ID repeats, even when the head returns to an earlier commit."""
+
     def describe(self) -> str:
         """Where the source is up to, for people."""
         return f'after {self.after:%Y-%m-%d %H:%M:%S} UTC'
@@ -150,14 +154,19 @@ class HeadChanged(_source.Event):
     pull: int
 
     user: str | None
-    """The login of the new head commit's author, usually whoever pushed it.
-    ``None`` when GitHub can't match the commit to an account."""
+    """The login of the new head commit's committer: whoever made it, or
+    rebased or amended it, and usually whoever pushed it. ``web-flow`` for a
+    commit GitHub made; ``None`` when GitHub can't match the commit to an
+    account."""
 
     before: str
     """The head commit's SHA before."""
 
     after: str
     """The head commit's SHA now."""
+
+    message: str
+    """The new head commit's message."""
 
     url: str
     """The changes between the two on github.com."""
@@ -245,6 +254,7 @@ def _apply_poll(
             after=after,
             seen={id_: time for id_, time in reported.items() if time >= after},
             head=head,
+            head_changes=state.head_changes + (head_changed is not None),
         ),
     )
 
@@ -328,18 +338,24 @@ async def _fetch_head_change(
     client: _api.GitHubClient,
     repo: str,
     pull: int,
+    *,
+    number: int,
     before: str,
-    pull_request: _api.PullRequest,
+    after: str,
+    time: datetime,
 ) -> HeadChanged:
-    after = pull_request.head.sha
+    """The ``number``\\ th head change, which a push is found by rather than
+    timed by, so it takes ``time``, when the poll saw it."""
+    commit = await client.fetch_commit(repo, after)
     return HeadChanged(
-        id=f'head-{before}-{after}',
-        time=pull_request.updated_at,
+        id=f'head-{number}-{after}',
+        time=time,
         repo=repo,
         pull=pull,
-        user=await client.fetch_commit_author(repo, after),
+        user=commit.committer.login if commit.committer is not None else None,
         before=before,
         after=after,
+        message=commit.message,
         url=f'https://github.com/{repo}/compare/{before}...{after}',
     )
 
@@ -405,44 +421,41 @@ async def watch(
 
     Starts from ``state``, or when it's ``None`` from now by GitHub's clock,
     taking the pull request's current head when the state has none, and first
-    yields that starting state as a checkpoint. Then it polls every ``poll_interval`` and yields an update
-    for each poll that finds new events.
+    yields that starting state as a checkpoint. Then it polls every
+    ``poll_interval`` and yields an update for each poll that finds new events.
     """
     current = (
         state if state is not None else GitHubState(after=await client.fetch_time())
     )
     if current.head is None:
         current = current.model_copy(
-            update={'head': (await client.fetch_pull_request(repo, pull)).head.sha},
+            update={'head': await client.fetch_head(repo, pull)},
         )
     yield _source.Update(events=(), state=current)
 
+    url = f'https://github.com/{repo}/pull/{pull}'
     while True:
         started_at = await client.fetch_time()
-        pull_request = await client.fetch_pull_request(repo, pull)
-        events = await _fetch_events(
-            client,
-            repo,
-            pull,
-            current,
-            pull_request.html_url,
-        )
+        head = await client.fetch_head(repo, pull)
+        events = await _fetch_events(client, repo, pull, current, url)
         head_changed = (
             await _fetch_head_change(
                 client,
                 repo,
                 pull,
-                current.head,
-                pull_request,
+                number=current.head_changes + 1,
+                before=current.head,
+                after=head,
+                time=started_at,
             )
-            if current.head is not None and current.head != pull_request.head.sha
+            if current.head is not None and current.head != head
             else None
         )
         update = _apply_poll(
             current,
             events,
             settled_before=started_at - _SETTLE_TIME,
-            head=pull_request.head.sha,
+            head=head,
             head_changed=head_changed,
         )
         if update.events:

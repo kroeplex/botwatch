@@ -207,10 +207,12 @@ Each event type then carries its own fields: for Slack, `conversation`, `ts`,
 `thread_ts`, `user`, `bot_id`, `username`, `subtype` and `text`; for GitHub,
 `repo`, `pull`, `user` and `url`, plus a comment's or review's `body`, a
 review's `state` and `comments` (each with its `path` and `line`), a head
-change's `before` and `after` SHAs, and a state change's `state` (`merged`,
-`closed`, `reopened`, `ready_for_review` or `converted_to_draft`); for
-`botwatch.source_failed`, `error`, what the source raised. Diagnostics go to stderr. The exit status is 0
-after a normal run, and 2 for a bad config, state file or environment.
+change's `before` and `after` SHAs and new head commit's `message` (its
+`user` is the committer), and a state change's `state` (`merged`, `closed`,
+`reopened`, `ready_for_review` or `converted_to_draft`); for
+`botwatch.source_failed`, `error`, what the source raised. Diagnostics go to
+stderr. The exit status is 0 after a normal run, and 2 for a bad config, state
+file or environment.
 
 ## Using it from Python
 

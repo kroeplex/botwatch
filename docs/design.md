@@ -158,16 +158,18 @@ conversation doesn't include thread replies.
     review's comments on the diff. Every diff comment belongs to a review, even
     a lone reply, so reviews cover them all.
   - `github.head_changed` when the head moves to another commit, with the
-    SHAs before and after, and the new head commit's author as `user`.
+    SHAs before and after, and the new head commit's committer as `user` and
+    message as `message`.
   - `github.state_changed` for each merge, close, reopen, and switch between
     draft and ready for review, from the pull request's issue events. The
     `closed` that comes with a merge is left out.
 - **State.** The state is a time, `after`, by GitHub's clock, plus `seen`, the
   IDs of the events from then on already reported, and `head`, the head commit
-  when last polled. A review is placed by when it was submitted rather than by
+  when last polled, with `head_changes`, a count that numbers each head change
+  so no ID repeats. A review is placed by when it was submitted rather than by
   its ID, which it takes while still pending. A push has no time of its own to
   place it by, so it's found by comparing the head with `head`, which a source
-  without one records as it starts.
+  without one records as it starts, and timed by the poll that found it.
 - **Settling.** GitHub's timestamps don't follow the order in which events
   become visible, and a poll lists events in several calls. So `after` trails
   the newest event reported, by up to ten seconds before the poll began, and
@@ -175,9 +177,10 @@ conversation doesn't include thread replies.
 - **Starting.** A fresh source starts from now by GitHub's clock: the `Date`
   of a call that doesn't count against the rate limit. Each poll starts the
   same way.
-- **Polling.** Each poll reads the pull request, lists the comments since
-  `after`, every review and the issue events, and, when a review is new, every
-  diff comment, grouped into its review. A pure
+- **Polling.** Each poll reads the head's SHA, whose `ETag` changes only when
+  the head does, and lists the comments since `after`, every review and the
+  issue events. When a review is new, it lists every diff comment, grouped into
+  its review, and when the head has moved, it reads the new head commit. A pure
   step, `_apply_poll`, keeps the events not yet reported, oldest first, and
   advances the state.
 - **The client** (`github/_api.py`) counts a list's pages, since a 304 carries
@@ -238,8 +241,9 @@ are dropped by `(source, id)` and `botwatch.*` events are ignored. Only a run
 that ends without saving its state, such as a crash, may cause repeats, and no
 event is ever skipped. A GitHub source is held to the same set of events but
 not to one order, since GitHub can reveal events out of time order, and its
-whole-second times don't order the events within one second. Until its state
-is first saved, it measures pushes from the head at each run's start.
+whole-second times don't order the events within one second. Until a state
+with its `head` is first saved, it measures pushes from the head at each run's
+start.
 
 Without either, a new source's state is first saved by a run that ends
 normally after the source has delivered its first update. Until then, each run

@@ -15,7 +15,7 @@ _PULL = _fake_github.PULL
 
 _NO_WAIT = timedelta(0)
 
-_HEAD = 'a' * 40
+_HEAD = _fake_github.HEAD
 
 _NEW_HEAD = 'b' * 40
 
@@ -245,30 +245,82 @@ class Test_watch:
         assert _bodies(first.events) == ['first']
         assert _bodies(second.events) == ['same second']
 
-
-class Test_watch__lifecycle:
     async def test__reports_a_push(self) -> None:
-        fake = _fake_github.FakeGitHub()
-        fake.push(3, _NEW_HEAD, user='octocat')
+        fake = _fake_github.FakeGitHub(now=at(3))
+        fake.push(_NEW_HEAD, user='octocat', message='Fix the typo')
 
         events = await _poll_once(fake, github.GitHubState(after=at(2), head=_HEAD))
 
         assert events == [
             github.HeadChanged(
-                id=f'head-{_HEAD}-{_NEW_HEAD}',
+                id=f'head-1-{_NEW_HEAD}',
                 time=at(3),
                 repo=_REPO,
                 pull=_PULL,
                 user='octocat',
                 before=_HEAD,
                 after=_NEW_HEAD,
+                message='Fix the typo',
                 url=f'https://github.com/{_REPO}/compare/{_HEAD}...{_NEW_HEAD}',
             ),
         ]
 
+    async def test__numbers_pushes_that_return_to_a_head(self) -> None:
+        fake = _fake_github.FakeGitHub()
+        ids: list[str] = []
+
+        async with fake.create_client() as client:
+            source = github.watch(
+                client,
+                _REPO,
+                _PULL,
+                state=github.GitHubState(after=at(2), head=_HEAD),
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                for head in [_NEW_HEAD, _HEAD, _NEW_HEAD]:
+                    fake.push(head)
+                    ids.extend(event.id for event in (await anext(source)).events)
+
+        assert ids == [f'head-1-{_NEW_HEAD}', f'head-2-{_HEAD}', f'head-3-{_NEW_HEAD}']
+
+    async def test__an_idle_poll_costs_only_304s(self) -> None:
+        fake = _fake_github.FakeGitHub()
+        fake.review(3)
+        clock_reads = 0
+
+        def comment_on_the_third_poll(request: httpx.Request) -> None:
+            nonlocal clock_reads
+            if request.url.path == '/rate_limit':
+                clock_reads += 1
+                if clock_reads == 3:
+                    fake.comment(4)
+
+        fake.after_each = comment_on_the_third_poll
+        async with fake.create_client() as client:
+            source = github.watch(
+                client,
+                _REPO,
+                _PULL,
+                state=github.GitHubState(after=at(2), head=_HEAD),
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                await anext(source)  # the review, on the first poll
+                await anext(source)  # the comment, on the third
+
+        clock_indexes = [
+            index
+            for index, request in enumerate(fake.requests)
+            if request.url.path == '/rate_limit'
+        ]
+        assert fake.statuses[clock_indexes[1] + 1 : clock_indexes[2]] == [304] * 4
+
     async def test__records_a_missing_head_as_it_starts(self) -> None:
         fake = _fake_github.FakeGitHub()
-        fake.push(1, _NEW_HEAD)
+        fake.push(_NEW_HEAD)
 
         async with fake.create_client() as client:
             source = github.watch(

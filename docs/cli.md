@@ -60,15 +60,15 @@ added github:octo-org/octo-repo#26
 ```
 
 Watches a Slack conversation's top level, or with `--thread` one thread in it,
-or a GitHub pull request's comments and reviews. Prints `added`, `updated` or
-`unchanged`, and the source's key.
+or a GitHub pull request's comments, reviews, pushes and state changes. Prints
+`added`, `updated` or `unchanged`, and the source's key.
 
 | Option | Meaning |
 | --- | --- |
 | `CONVERSATION` | The conversation ID, such as `C0123456789`. |
 | `PULL_REQUEST` | `OWNER/REPO#NUMBER`, such as `octo-org/octo-repo#26`, or the pull request's URL. |
 | `--thread TS` | Slack only: the `ts` of the thread's first message, such as `1785600000.000200`. |
-| `--start-after POSITION` | Where the source starts until a run has saved its state: the newest `ts` (Slack) or time such as `2026-08-01T16:00:00Z` (GitHub) the caller has read there, not that of its own reply, which can land after messages it hasn't seen. GitHub events in that second are reported again. Without it, the source starts from the run that first watches it. |
+| `--start-after POSITION` | Where the source starts until a run has saved its state: the newest `ts` (Slack) or time such as `2026-08-01T16:00:00Z` (GitHub) the caller has read there, not that of its own reply, which can land after messages it hasn't seen. GitHub events in that second are reported again, and pushes are reported from the source's first run on. Without it, the source starts from the run that first watches it. |
 | `--poll-interval DURATION` | How often to poll, such as `15s`. Unset, it falls back to the type's default (see `defaults`), or else `30s` for Slack, `1m` for GitHub. |
 | `--exclude RULE` | Events to skip, as a YAML mapping, such as `'{user: U0123BOT}'` or `"{text: '^\[op 1\]'}"`. Repeat it for more rules. See [Configuration](../README.md#configuration). |
 

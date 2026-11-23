@@ -1,4 +1,4 @@
-"""Rules for comments and reviews a GitHub source should skip."""
+"""Rules for events a GitHub source should skip."""
 
 import pydantic
 import re
@@ -8,20 +8,21 @@ from typing import assert_never
 
 
 class ExcludeRule(pydantic.BaseModel):
-    """Matches a comment or review when every field set here matches it, such
-    as the caller's own, recognised by its author or a text prefix."""
+    """Matches an event when every field set here matches it, such as the
+    caller's own, recognised by its login or a text prefix."""
 
     model_config = pydantic.ConfigDict(extra='forbid', frozen=True)
 
     user: str | None = None
-    """The author's login, in any case."""
+    """The login of whoever posted the comment or review, committed the new
+    head, or changed the state, in any case."""
 
     text: re.Pattern[str] | None = None
-    """A regular expression, searched for anywhere in the comment's or review's
-    Markdown body. A review with comments but no body, such as a lone reply on
-    the diff, matches when every one of its comments does. A head or state
-    change has no text, so it never matches. Anchor it with ``^``; set
-    flags inline, such as ``(?i)``."""
+    """A regular expression, searched for anywhere in a comment's or review's
+    Markdown body, or a new head commit's message. A review with comments but
+    no body, such as a lone reply on the diff, matches when every one of its
+    comments does. A state change has no text, so it never matches. Anchor it
+    with ``^``; set flags inline, such as ``(?i)``."""
 
     @pydantic.model_validator(mode='after')
     def _check_some_field_is_set(self) -> Self:
@@ -37,7 +38,9 @@ class ExcludeRule(pydantic.BaseModel):
                 bodies = [comment.body for comment in event.comments]
             case _watch.CommentPosted() | _watch.ReviewSubmitted():
                 bodies = [event.body]
-            case _watch.HeadChanged() | _watch.StateChanged():
+            case _watch.HeadChanged():
+                bodies = [event.message]
+            case _watch.StateChanged():
                 bodies = []
             case _:
                 assert_never(event)
