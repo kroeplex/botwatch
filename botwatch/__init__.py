@@ -5,6 +5,7 @@ recording how far it got last time, blocks until something happens, writes any
 new events to stdout, writes the advanced state back, and exits.
 """
 
+import importlib.metadata
 from ._exclude import exclude_events
 from ._select import select
 from ._source import Event
@@ -19,4 +20,4 @@ __all__ = [
     'select',
 ]
 
-__version__ = '0.1.0'
+__version__ = importlib.metadata.version('botwatch')
