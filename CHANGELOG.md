@@ -9,6 +9,12 @@
 
 ## [Unreleased]
 
+## <span id="0-2-1" /> [0.2.1](https://github.com/kroeplex/botwatch/compare/0.2.0...0.2.1) - 2026-11-23
+
+### Changes
+
+* Print the installed version with `botwatch --version` ([#35](https://github.com/kroeplex/botwatch/pull/35))
+
 ## <span id="0-2-0" /> [0.2.0](https://github.com/kroeplex/botwatch/compare/0.1.0...0.2.0) - 2026-11-23
 
 ### Changes
