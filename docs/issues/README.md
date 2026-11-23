@@ -7,7 +7,7 @@ Conventions and how to write a good issue: **[the shared issue tracker guide](ht
 
 | # | Title | Kind | Status |
 |---|---|---|---|
-| [0015](0015.md) | Watch many sources in one blocking run, each carrying its own state | RFC | Open |
+| [0015](0015.md) | Watch many sources in one blocking run, each carrying its own state | Enhancement | Open |
 | [0013](0013.md) | Resync the vendored boilerplate before this repo is published | Bug | Open |
 | [0012](0012.md) | Add the Pub/Sub driver, making `botwatch` push-capable | Feature | Superseded by 0015 |
 | [0011](0011.md) | Add the GitHub driver for pull requests, reviews, and check runs | Feature | Superseded by 0015 |
