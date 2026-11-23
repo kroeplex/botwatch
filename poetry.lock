@@ -1098,7 +1098,7 @@ files = [
 
 [[package]]
 name = "turbopipes"
-version = "0.1.0"
+version = "0.4.0"
 description = ""
 optional = false
 python-versions = "^3.11"
@@ -1109,8 +1109,8 @@ develop = false
 [package.source]
 type = "git"
 url = "https://github.com/kkroening/turbopipes.git"
-reference = "9a78e18c4c1c8b8189039bc0a1e93af1c3a05d3f"
-resolved_reference = "9a78e18c4c1c8b8189039bc0a1e93af1c3a05d3f"
+reference = "0.4.0"
+resolved_reference = "e4edd223e5af0883e5bc0b2a94d86d2728c2ab22"
 
 [[package]]
 name = "types-pyyaml"
@@ -1154,4 +1154,4 @@ typing-extensions = ">=4.15.0"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.14,<4"
-content-hash = "0dfa36f48283f55c979981a3845378b4d528246fa774f56b0366bef98b0f2f5d"
+content-hash = "c4bba3338d8d48a4d5bc8dfb597c046064f6e96825734e12f4966174dc19b90a"
