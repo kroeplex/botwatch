@@ -3,9 +3,8 @@
 ## Kroeplex shared agent instructions
 
 Conventions common to all Kroeplex repos live in **dev-docs**, imported at the
-end of this file via the committed `.dev-docs` symlink (it chains up to a
-one-time per-machine link beside the repo clones; run the `link-dev-docs` skill
-if it ever fails to resolve).
+end of this file via the committed `.dev-docs` symlink, which chains up to a
+one-time per-machine link beside the repo clones.
 
 Everything below is specific to this repo and wins over the common guide on
 conflict.

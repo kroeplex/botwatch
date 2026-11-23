@@ -1,0 +1,451 @@
+#!/usr/bin/env bash
+##
+##  reserve_issue — claim the next issue number directly on the default branch.
+##
+##  VENDORED FILE — source of truth in dev-docs:
+##    https://github.com/kroeplex/dev-docs/blob/main/boilerplate/scripts/reserve_issue
+##  Copied verbatim into each Kroeplex repo; edit it upstream, not here.
+##
+##  An issue's number is otherwise chosen by scanning `docs/issues/` on a branch,
+##  where the claim is invisible until merge — so two branches opening in the
+##  same window take the same number, and whoever merges second has to renumber.
+##  Renumbering breaks every reference already published, including ones outside
+##  the repo that cannot be fixed. See dev-docs issue 0013.
+##
+##  This claims the number up front by committing a placeholder straight to the
+##  remote branch. Concurrency is optimistic: the commit's parent is the branch
+##  tip we read, so a racing reservation makes the push non-fast-forward and git
+##  rejects it. The retry re-applies the *intent* — "claim the next available
+##  number" — against the new tip, rather than replaying a diff.
+##
+##  A crash between a successful push and its acknowledgement leaks a number.
+##  That is fine: numbering must be monotonic, not contiguous, so a gap is legal
+##  and no did-my-push-land reconciliation is needed.
+##
+##  Usage:
+##    reserve_issue [--title <title>] [--kind <Kind>] [--message <text>]
+##                  [--remote <name>] [--branch <name>] [--attempts <n>]
+##    reserve_issue --help
+##
+##  Prints the reserved number (e.g. `0014`) on stdout; everything else is
+##  stderr, so `number="$(reserve_issue --title …)"` is the intended use.
+##
+set -euo pipefail
+
+## Assign then mark readonly on a separate line: `readonly VAR="$(...)"` would
+## mask the command substitution's exit status from `set -e`.
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly _SCRIPT_DIR
+_ROOT_DIR="$(cd "${_SCRIPT_DIR}/.." && pwd)"
+readonly _ROOT_DIR
+
+readonly _DEFAULT_KIND="Enhancement"
+readonly _DEFAULT_REMOTE="origin"
+readonly _DEFAULT_BRANCH="main"
+
+## How many times to re-read the branch and try again after losing a race. Each
+## attempt is a fetch plus a push, so a small number covers any realistic
+## contention; exhausting it means something other than a race is wrong.
+readonly _DEFAULT_ATTEMPTS=5
+
+_fail() {
+  ##
+  ## Print a `printf`-style error to stderr and return failure.
+  ##
+  local -r fmt="$1"
+  shift
+  printf "reserve_issue: ${fmt}\n" "$@" >&2
+  return 1
+}
+
+_log() {
+  ##
+  ## Print progress to stderr, keeping stdout clean for the reserved number.
+  ##
+  local -r fmt="$1"
+  shift
+  printf "reserve_issue: ${fmt}\n" "$@" >&2
+}
+
+_find_next_number() {
+  ##
+  ## Print the next free four-digit number, given a directory of issue files.
+  ##
+  ## Monotonic rather than gap-filling: the highest existing number plus one, so
+  ## a leaked reservation stays leaked instead of being handed out twice.
+  ##
+  local -r issues_dir="$1"
+  local -i highest=0
+  local file basename number
+  shopt -s nullglob
+  for file in "${issues_dir}"/[0-9][0-9][0-9][0-9].md; do
+    basename="${file##*/}"
+    number="${basename%.md}"
+    ## Force base 10: a leading zero would otherwise be read as octal, so 0008
+    ## and 0009 are errors rather than numbers.
+    if ((10#${number} > highest)); then
+      highest=$((10#${number}))
+    fi
+  done
+  shopt -u nullglob
+  printf '%04d' "$((highest + 1))"
+}
+
+_write_placeholder() {
+  ##
+  ## Write the placeholder issue file.
+  ##
+  ## It must parse: `render_issues` rejects an unknown `Kind` outright, and the
+  ## *next* reservation renders this file, so an invalid placeholder breaks the
+  ## reservation after it rather than merely looking untidy.
+  ##
+  local -r path="$1"
+  local -r number="$2"
+  local -r kind="$3"
+  local -r title="$4"
+
+  local heading="(reserved)"
+  if [[ -n "${title}" ]]; then
+    heading+=" ${title}"
+  fi
+
+  cat > "${path}" << EOF
+# ${number} — ${heading}
+
+**Status:** Open
+· **Kind:** ${kind}
+· **Parent:** <a href="README.md" title="Issues">Issues</a>
+
+> Placeholder reserving this number. Details land via PR.
+EOF
+}
+
+_build_commit_message() {
+  ##
+  ## Print the commit message: a subject naming what was reserved, then any
+  ## caller-supplied text.
+  ##
+  ## The caller's text is opaque here. By convention a Kroebot operator puts its
+  ## ID in it, so an abandoned reservation still traces back to a session.
+  ##
+  local -r number="$1"
+  local -r kind="$2"
+  local -r title="$3"
+  local -r message="$4"
+
+  local subject="Reserve ${kind} ${number}"
+  if [[ -n "${title}" ]]; then
+    subject+=" - ${title}"
+  fi
+
+  printf '%s\n' "${subject}"
+  if [[ -n "${message}" ]]; then
+    printf '\n%s\n' "${message}"
+  fi
+}
+
+_populate_scratch_tree() {
+  ##
+  ## Fill <scratch> with the branch's issue files plus a runnable renderer.
+  ##
+  ## The issue files come from the *branch*, never the working tree, so an
+  ## unmerged retitle or status flip on the caller's branch cannot reach the
+  ## index this reservation writes.
+  ##
+  ## The renderer is copied off disk instead, because `cp` behaves identically
+  ## whether `scripts/render_issues` is a real file or a symlink — including one
+  ## resolving outside the repo — so one line covers every installation. `git
+  ## archive` cannot: it preserves symlinks rather than dereferencing them, and
+  ## there is no pathspec that works in every repo.
+  ##
+  local -r scratch="$1"
+  local -r ref="$2"
+
+  ## Every step guards explicitly. This function is called under `||`, which
+  ## disables errexit for its whole body — so without these a failed archive
+  ## falls through and the function reports `cp`'s success, handing an empty
+  ## tree to the caller that reads it as "no issues yet".
+  ##
+  ## A tracker that does not exist yet is the one case where that reading is
+  ## correct, and it has to be told apart deliberately: `git archive` fails on a
+  ## pathspec matching nothing, so without this branch a repo could never reserve
+  ## its own first issue. `render_issues` bootstraps the same case.
+  ##
+  ## ⚠️ The ref is verified *first*, so "no tracker yet" can only ever come from
+  ## a readable ref that genuinely lacks one. Without that, an unreadable ref
+  ## fails the `:docs/issues` lookup for the wrong reason and is read as an empty
+  ## tracker — handing back `0001`, which on any established repo is live. The
+  ## caller checks the ref too; this branch must not depend on that, because it
+  ## is the one that turns a bad ref into a plausible answer.
+  if ! git -C "${_ROOT_DIR}" rev-parse --verify --quiet "${ref}" > /dev/null; then
+    _fail "cannot read %s — does %s have a tracking ref for %s?" \
+      "${ref}" "${_ROOT_DIR}" "${ref##*/}"
+    return 1
+  fi
+  if git -C "${_ROOT_DIR}" rev-parse --verify --quiet "${ref}:docs/issues" \
+    > /dev/null; then
+    git -C "${_ROOT_DIR}" archive "${ref}" docs/issues \
+      | tar -x -C "${scratch}" || return 1
+  else
+    mkdir -p "${scratch}/docs/issues" || return 1
+  fi
+  mkdir -p "${scratch}/scripts" || return 1
+  cp "${_SCRIPT_DIR}/render_issues" "${scratch}/scripts/render_issues" || return 1
+}
+
+_commit_scratch_files() {
+  ##
+  ## Build a commit from the two scratch files and print its SHA.
+  ##
+  ## A temp index rather than the caller's: `git mktree` cannot write a nested
+  ## path at all ("contains slash"), and staging in the real index would both
+  ## disturb the caller and let unrelated paths in.
+  ##
+  local -r scratch="$1"
+  local -r ref="$2"
+  local -r number="$3"
+  local -r message_file="$4"
+
+  ## A subshell so `GIT_INDEX_FILE` cannot outlive the commit: exporting it in
+  ## this function would leak it past every early return, into a later attempt
+  ## whose scratch directory has already been removed.
+  (
+    export GIT_INDEX_FILE="${scratch}/index"
+    git -C "${_ROOT_DIR}" read-tree "${ref}" || exit 1
+
+    local path blob
+    for path in "docs/issues/${number}.md" "docs/issues/README.md"; do
+      blob="$(git -C "${_ROOT_DIR}" hash-object -w "${scratch}/${path}")" || exit 1
+      git -C "${_ROOT_DIR}" update-index \
+        --add --cacheinfo "100644,${blob},${path}" || exit 1
+    done
+
+    local tree
+    tree="$(git -C "${_ROOT_DIR}" write-tree)" || exit 1
+    git -C "${_ROOT_DIR}" commit-tree "${tree}" -p "${ref}" -F "${message_file}" \
+      || exit 1
+  )
+}
+
+_prepare_reservation() {
+  ##
+  ## Build the placeholder and index in <scratch> and print the number claimed.
+  ##
+  local -r scratch="$1"
+  local -r ref="$2"
+  local -r kind="$3"
+  local -r title="$4"
+
+  _populate_scratch_tree "${scratch}" "${ref}" || return 1
+
+  local number
+  number="$(_find_next_number "${scratch}/docs/issues")" || return 1
+  _write_placeholder \
+    "${scratch}/docs/issues/${number}.md" "${number}" "${kind}" "${title}" || return 1
+
+  ## The renderer narrates to stderr on success, which would be noise here — but
+  ## swallowing it unconditionally would also hide the parse error that a bad
+  ## placeholder produces, so it is held and replayed only on failure.
+  local render_output=""
+  if ! render_output="$("${scratch}/scripts/render_issues" 2>&1)"; then
+    printf '%s\n' "${render_output}" >&2
+    _fail "the placeholder did not render — refusing to reserve %s" "${number}"
+    return 1
+  fi
+
+  printf '%s' "${number}"
+}
+
+_attempt_reservation() {
+  ##
+  ## Try once: read the branch, render, commit, push. Print the number on
+  ## success.
+  ##
+  ## Returns 2 — and only 2 — when the push was rejected, which is how a lost
+  ## race is told apart from a real failure. Retrying anything else would just
+  ## repeat it.
+  ##
+  local -r remote="$1"
+  local -r branch="$2"
+  local -r subject_kind="$3"
+  local -r file_kind="$4"
+  local -r title="$5"
+  local -r message="$6"
+
+  if ! git -C "${_ROOT_DIR}" fetch --quiet "${remote}" "${branch}"; then
+    _fail "cannot fetch %s from %s" "${branch}" "${remote}"
+    return 1
+  fi
+  local -r ref="refs/remotes/${remote}/${branch}"
+
+  ## The tip this attempt builds on, kept so a failed push can be classified by
+  ## asking whether the remote has moved off it.
+  ##
+  ## Named through `_fail` like every other failure here: a caller whose clone
+  ## has no tracking ref for the branch — a `--single-branch` clone is the
+  ## realistic case — otherwise gets only git's raw `ambiguous argument` and
+  ## nothing saying which tool produced it.
+  local parent=""
+  if ! parent="$(git -C "${_ROOT_DIR}" rev-parse --verify --quiet "${ref}")"; then
+    _fail "cannot read %s — is %s a remote with a tracking ref for %s?" \
+      "${ref}" "${remote}" "${branch}"
+    return 1
+  fi
+
+  local scratch
+  scratch="$(mktemp -d)" || return 1
+
+  local number="" commit="" status=0
+  number="$(_prepare_reservation "${scratch}" "${ref}" "${file_kind}" "${title}")" \
+    || status=1
+
+  if ((status == 0)); then
+    _build_commit_message "${number}" "${subject_kind}" "${title}" "${message}" \
+      > "${scratch}/message" || status=1
+  fi
+  if ((status == 0)); then
+    commit="$(_commit_scratch_files \
+      "${scratch}" "${ref}" "${number}" "${scratch}/message")" || status=1
+  fi
+  ## An empty left-hand side makes the refspec below a branch **deletion**:
+  ## `git push <remote> :refs/heads/<branch>` deletes, and reports success while
+  ## doing it. Reaching the push with no commit is already prevented by the
+  ## status threading above — but that is precisely the guard this script has
+  ## lost twice, and the state it degrades to should not be "delete the branch we
+  ## were asked to append to". Only the branch `HEAD` points at is shielded by
+  ## git's own default, and `--branch` exists.
+  if ((status == 0)) && [[ -z "${commit}" ]]; then
+    _fail "internal error: refusing to push an empty refspec" || status=1
+  fi
+
+  if ((status == 0)); then
+    ## A push fails for reasons that have nothing to do with contention — branch
+    ## protection, auth, a bad remote — and retrying those buries the one line
+    ## saying which. So the output is held rather than discarded, and a lost race
+    ## is identified by **asking the remote**, not by matching git's prose:
+    ## a race means somebody else advanced the branch, so the tip has moved off
+    ## the parent this commit was built on. That test is what the condition
+    ## actually means, and unlike substring-matching `[rejected]` it does not
+    ## quietly stop working under a non-English locale.
+    local push_output=""
+    if ! push_output="$(git -C "${_ROOT_DIR}" push --quiet \
+      "${remote}" "${commit}:refs/heads/${branch}" 2>&1)"; then
+      local current_tip=""
+      current_tip="$(git -C "${_ROOT_DIR}" ls-remote \
+        "${remote}" "refs/heads/${branch}" | cut -f1)" || current_tip=""
+      if [[ -n "${current_tip}" && "${current_tip}" != "${parent}" ]]; then
+        status=2
+      else
+        printf '%s\n' "${push_output}" >&2
+        status=1
+      fi
+    fi
+  fi
+
+  rm -rf "${scratch}"
+
+  if ((status != 0)); then
+    return "${status}"
+  fi
+  printf '%s' "${number}"
+}
+
+_show_usage() {
+  cat >&2 << 'EOF'
+Usage: reserve_issue [options]
+
+Claim the next issue number by committing a placeholder straight to the default
+branch, so the number is taken before the PR that fills it in exists. Prints the
+reserved number on stdout.
+
+  --title <text>    Tentative title. Renders as "(reserved) <text>".
+  --kind <Kind>     Enhancement (default), Bug, or RFC.
+  --message <text>  Appended to the commit message under the subject line.
+                    A Kroebot operator puts its ID here.
+  --remote <name>   Default: origin.
+  --branch <name>   Default: main.
+  --attempts <n>    Retries after losing a race. Default: 5.
+  -h, --help        Show this help.
+EOF
+}
+
+_main() {
+  local kind="" title="" message=""
+  local remote="${_DEFAULT_REMOTE}" branch="${_DEFAULT_BRANCH}"
+  ## Held as a string until validated: declaring it `-i` would make the
+  ## assignment itself evaluate the operand, so `--attempts foo` would abort with
+  ## a raw bash error before anything could name the flag.
+  local attempts="${_DEFAULT_ATTEMPTS}"
+
+  while (($#)); do
+    ## Every value-taking flag checks for its operand before consuming it: a
+    ## bare `shift 2` on a missing one fails under errexit, which exits 1 in
+    ## silence and reads as a crash rather than a typo.
+    case "$1" in
+      -h | --help)
+        _show_usage
+        return 0
+        ;;
+      --title | --kind | --message | --remote | --branch | --attempts)
+        if (($# < 2)); then
+          _fail "%s requires a value (try --help)" "$1"
+          return 1
+        fi
+        case "$1" in
+          --title) title="$2" ;;
+          --kind) kind="$2" ;;
+          --message) message="$2" ;;
+          --remote) remote="$2" ;;
+          --branch) branch="$2" ;;
+          --attempts) attempts="$2" ;;
+        esac
+        shift 2
+        ;;
+      *)
+        _fail "unrecognized argument: %s (try --help)" "$1"
+        return 1
+        ;;
+    esac
+  done
+
+  if [[ ! "${attempts}" =~ ^[1-9][0-9]*$ ]]; then
+    _fail "--attempts must be a positive integer, got: %s" "${attempts}"
+    return 1
+  fi
+
+  ## The subject names the kind the caller asked for; with none given it says
+  ## "issue", while the placeholder still needs a valid Kind to parse.
+  local -r subject_kind="${kind:-issue}"
+  local -r file_kind="${kind:-${_DEFAULT_KIND}}"
+
+  local -i attempt status
+  local number=""
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    status=0
+    number="$(_attempt_reservation \
+      "${remote}" "${branch}" "${subject_kind}" "${file_kind}" \
+      "${title}" "${message}")" || status=$?
+    if ((status == 0)); then
+      break
+    fi
+    if ((status != 2)); then
+      return 1 # already reported; only a rejected push is worth retrying
+    fi
+    number=""
+    _log "attempt %d/%d lost the race for %s/%s; retrying" \
+      "${attempt}" "${attempts}" "${remote}" "${branch}"
+  done
+
+  if [[ -z "${number}" ]]; then
+    _fail "gave up after %d attempts against %s/%s" \
+      "${attempts}" "${remote}" "${branch}"
+    return 1
+  fi
+
+  _log "reserved %s on %s/%s" "${number}" "${remote}" "${branch}"
+  printf '%s\n' "${number}"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  _main "$@"
+fi

@@ -43,7 +43,7 @@ readonly _GUIDE_URL="https://github.com/kroeplex/dev-docs/blob/main/docs/issue-t
 
 ## The vocabulary the guide defines (see the guide's Conventions). `Status`
 ## also admits `Superseded by NNNN`, whose numeric tail is matched separately.
-readonly -a _VALID_KINDS=(Feature Enhancement Bug Papercut Discussion RFC)
+readonly -a _VALID_KINDS=(Enhancement Bug RFC)
 readonly -a _VALID_STATUSES=(Open "In progress" Resolved Rejected)
 
 _fail() {
