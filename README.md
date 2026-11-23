@@ -82,7 +82,8 @@ each kind of conversation you watch: `channels:history`, `groups:history`,
 has been added to.
 
 For GitHub, set `GITHUB_TOKEN` to a token that can read the repositories'
-pull requests, such as a fine-grained token with read access to pull requests.
+pull requests and their checks: a fine-grained token or GitHub App needs read
+access to pull requests, checks and commit statuses.
 
 ## Using it from an agent
 
@@ -157,9 +158,11 @@ busy or old threads, raise `poll_interval` or prune the watch set.
 
 A GitHub source reports a pull request's conversation comments, each
 submitted review with its comments on the diff (a lone reply on the diff is a
-review too), each push that moves its head, and each merge, close, reopen, and
-switch between draft and ready for review. Its polls are conditional requests,
-so a poll that finds nothing new doesn't count against GitHub's rate limit.
+review too), each push that moves its head, each merge, close, reopen, and
+switch between draft and ready for review, and the head's checks concluding:
+as soon as one fails, or once all have finished. Its polls are conditional
+requests, so a poll that finds nothing new doesn't count against GitHub's rate
+limit.
 
 A source's identity is derived from what it watches, such as
 `slack:C0123456789/1785600000.000200`, so the state file needs no migration as
@@ -199,17 +202,19 @@ Each event is one JSON line, flushed as it's written:
 | Field | Meaning |
 | --- | --- |
 | `source` | Which source it came from. |
-| `event.type` | What happened: `slack.message_posted`; `github.comment_posted`, `github.review_submitted`, `github.head_changed` or `github.state_changed`; or `botwatch.source_failed`. |
+| `event.type` | What happened: `slack.message_posted`; `github.comment_posted`, `github.review_submitted`, `github.head_changed`, `github.state_changed` or `github.checks_concluded`; or `botwatch.source_failed`. |
 | `event.id` | Unique within its source and stable across runs. Dedupe on `(source, id)`. |
 | `event.time` | When it happened at the source. |
 
 Each event type then carries its own fields: for Slack, `conversation`, `ts`,
 `thread_ts`, `user`, `bot_id`, `username`, `subtype` and `text`; for GitHub,
-`repo`, `pull`, `user` and `url`, plus a comment's or review's `body`, a
-review's `state` and `comments` (each with its `path` and `line`), a head
-change's `before` and `after` SHAs and new head commit's `message` (its
-`user` is the committer), and a state change's `state` (`merged`, `closed`,
-`reopened`, `ready_for_review` or `converted_to_draft`); for
+`repo`, `pull` and `url`, and `user` on all but a checks conclusion; plus a
+comment's or review's `body`, a review's `state` and `comments` (each with its
+`path` and `line`), a head change's `before` and `after` SHAs and new head
+commit's `message` (its `user` is the committer), a state change's `state`
+(`merged`, `closed`, `reopened`, `ready_for_review` or `converted_to_draft`),
+and a checks conclusion's `head`, `conclusion` (`success`, `failure` or
+`cancelled`), and `failed` and `pending` check names; for
 `botwatch.source_failed`, `error`, what the source raised. Diagnostics go to
 stderr. The exit status is 0 after a normal run, and 2 for a bad config, state
 file or environment.
@@ -231,9 +236,9 @@ The same pieces work as a library: sources are async generators, and
 ## Status
 
 Early, but working: new messages in Slack conversations and threads, and new
-comments, reviews, pushes and state changes on GitHub pull requests. Edits,
-deletions and reactions aren't reported yet, nor are check runs. Expiring
-sources that have gone quiet is next.
+comments, reviews, pushes, state changes and checks on GitHub pull requests.
+Edits, deletions and reactions aren't reported yet. Expiring sources that have
+gone quiet is next.
 
 ## License
 

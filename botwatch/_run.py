@@ -38,6 +38,7 @@ type SourceEvent = (
     | github.ReviewSubmitted
     | github.HeadChanged
     | github.StateChanged
+    | github.ChecksConcluded
 )
 """Every event a source can emit."""
 

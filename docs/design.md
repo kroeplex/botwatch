@@ -163,10 +163,22 @@ conversation doesn't include thread replies.
   - `github.state_changed` for each merge, close, reopen, and switch between
     draft and ready for review, from the pull request's issue events. The
     `closed` that comes with a merge is left out.
+  - `github.checks_concluded` when the head's checks reach a conclusion other
+    than the last one reported or recorded for that head: `failure` as soon as a check run
+    or commit status fails, and otherwise, once all have finished,
+    `cancelled` or `success`. Only each check's newest run counts, as a
+    workflow can run again for the same commit. A check suite not yet
+    completed holds back a success, since jobs that wait on others, or a
+    workflow waiting on its concurrency group, have no check run yet; a queued
+    suite with no runs counts only for its first minute, as some apps create
+    suites that never run. A completed suite with no runs counts as failed if
+    it failed to start, and as running while it awaits approval. A re-run that
+    turns a failure into a success is reported too.
 - **State.** The state is a time, `after`, by GitHub's clock, plus `seen`, the
   IDs of the events from then on already reported, and `head`, the head commit
   when last polled, with `head_changes`, a count that numbers each head change
-  so no ID repeats. A review is placed by when it was submitted rather than by
+  so no ID repeats, and `checks`, the last checks conclusion and its head, with
+  its own count. A review is placed by when it was submitted rather than by
   its ID, which it takes while still pending. A push has no time of its own to
   place it by, so it's found by comparing the head with `head`, which a source
   without one records as it starts, and timed by the poll that found it.
@@ -179,8 +191,9 @@ conversation doesn't include thread replies.
   same way.
 - **Polling.** Each poll reads the head's SHA, whose `ETag` changes only when
   the head does, and lists the comments since `after`, every review and the
-  issue events. When a review is new, it lists every diff comment, grouped into
-  its review, and when the head has moved, it reads the new head commit. A pure
+  issue events, and the head's check runs, check suites and statuses. When a
+  review is new, it lists every diff comment, grouped into its review, and
+  when the head has moved, it reads the new head commit. A pure
   step, `_apply_poll`, keeps the events not yet reported, oldest first, and
   advances the state.
 - **The client** (`github/_api.py`) counts a list's pages, since a 304 carries

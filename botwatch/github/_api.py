@@ -7,6 +7,7 @@ import logging
 import pydantic
 import time
 from .. import _utils
+from collections.abc import Callable
 from collections.abc import Mapping
 from dataclasses import InitVar
 from dataclasses import dataclass
@@ -138,6 +139,73 @@ _ISSUE_COMMENTS = pydantic.TypeAdapter(list[IssueComment])
 _REVIEWS = pydantic.TypeAdapter(list[Review])
 _REVIEW_COMMENTS = pydantic.TypeAdapter(list[ReviewComment])
 _ISSUE_EVENTS = pydantic.TypeAdapter(list[IssueEvent])
+
+
+class CheckRun(pydantic.BaseModel):
+    """One check on a commit, such as a CI job, reduced to the fields botwatch
+    reads."""
+
+    model_config = pydantic.ConfigDict(frozen=True)
+
+    id: int
+    """Newer runs have higher IDs."""
+
+    name: str
+    status: str
+    """``queued``, ``in_progress`` or ``completed``, among others."""
+
+    conclusion: str | None = None
+    """Once completed: ``success``, ``failure``, ``cancelled``, ``skipped``,
+    ``neutral``, ``timed_out`` or ``action_required``, among others."""
+
+
+class _App(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(frozen=True)
+
+    name: str
+
+
+class CheckSuite(pydantic.BaseModel):
+    """One app's checks on a commit, such as a GitHub Actions workflow run. It
+    stays incomplete until every one of its checks has run, including those
+    not created yet."""
+
+    model_config = pydantic.ConfigDict(frozen=True)
+
+    status: str
+    """``queued``, ``pending``, ``in_progress`` or ``completed``, among
+    others."""
+
+    conclusion: str | None = None
+    """Once completed: such as ``success``, ``failure``, ``startup_failure``
+    or ``action_required``."""
+
+    latest_check_runs_count: int
+    created_at: datetime
+    app: _App | None = None
+
+
+class Status(pydantic.BaseModel):
+    """A commit status, as older CI integrations report results."""
+
+    model_config = pydantic.ConfigDict(frozen=True)
+
+    context: str
+    state: str
+    """``pending``, ``success``, ``failure`` or ``error``."""
+
+
+class _CheckRunsPage(pydantic.BaseModel):
+    check_runs: list[CheckRun]
+
+
+class _CheckSuitesPage(pydantic.BaseModel):
+    check_suites: list[CheckSuite]
+
+
+class _CombinedStatus(pydantic.BaseModel):
+    statuses: list[Status]
+
 
 _SECONDARY_LIMIT_WAIT = 60.0
 """Seconds to wait at least on a secondary rate limit that names no wait, as
@@ -301,27 +369,24 @@ class GitHubClient:
                 )
         return content
 
-    async def _fetch_all[ModelT: pydantic.BaseModel](
+    async def _fetch_pages[ItemT](
         self,
-        adapter: pydantic.TypeAdapter[list[ModelT]],
         path: str,
+        read: Callable[[bytes], list[ItemT]],
         params: Mapping[str, str] | None = None,
-    ) -> list[ModelT]:
-        """GETs a paged list page by page, up to its first short page.
+    ) -> list[ItemT]:
+        """GETs a paged list page by page, up to its first short page, reading
+        each page's items with ``read``.
 
         Pages are counted rather than followed by their ``Link`` headers, which
         GitHub leaves out of a 304.
         """
         page = 1
-        batch = adapter.validate_json(
-            await self._get_conditionally(path, params or {}, page),
-        )
+        batch = read(await self._get_conditionally(path, params or {}, page))
         items = list(batch)
         while len(batch) == _PAGE_SIZE:
             page += 1
-            batch = adapter.validate_json(
-                await self._get_conditionally(path, params or {}, page),
-            )
+            batch = read(await self._get_conditionally(path, params or {}, page))
             items.extend(batch)
         return items
 
@@ -340,9 +405,9 @@ class GitHubClient:
     ) -> list[IssueComment]:
         """A pull request's conversation comments updated at or after
         ``since``, oldest first."""
-        return await self._fetch_all(
-            _ISSUE_COMMENTS,
+        return await self._fetch_pages(
             f'repos/{repo}/issues/{number}/comments',
+            _ISSUE_COMMENTS.validate_json,
             {'since': _utils.datetime.to_rfc3339(since)},
         )
 
@@ -352,7 +417,10 @@ class GitHubClient:
         number: int,
     ) -> list[Review]:
         """A pull request's reviews, oldest first."""
-        return await self._fetch_all(_REVIEWS, f'repos/{repo}/pulls/{number}/reviews')
+        return await self._fetch_pages(
+            f'repos/{repo}/pulls/{number}/reviews',
+            _REVIEWS.validate_json,
+        )
 
     async def fetch_head(self, repo: str, number: int) -> str:
         """The SHA of a pull request's head commit, asked for in a form whose
@@ -372,9 +440,33 @@ class GitHubClient:
     ) -> list[IssueEvent]:
         """What has been done to a pull request, such as closing it, oldest
         first."""
-        return await self._fetch_all(
-            _ISSUE_EVENTS,
+        return await self._fetch_pages(
             f'repos/{repo}/issues/{number}/events',
+            _ISSUE_EVENTS.validate_json,
+        )
+
+    async def fetch_check_runs(self, repo: str, sha: str) -> list[CheckRun]:
+        """The latest run of each check in each check suite on a commit. A
+        check whose workflow ran again for the commit appears once per run."""
+        return await self._fetch_pages(
+            f'repos/{repo}/commits/{sha}/check-runs',
+            lambda content: _CheckRunsPage.model_validate_json(content).check_runs,
+        )
+
+    async def fetch_check_suites(self, repo: str, sha: str) -> list[CheckSuite]:
+        """The check suites on a commit: one per app, or per workflow run."""
+        return await self._fetch_pages(
+            f'repos/{repo}/commits/{sha}/check-suites',
+            lambda content: _CheckSuitesPage.model_validate_json(
+                content,
+            ).check_suites,
+        )
+
+    async def fetch_statuses(self, repo: str, sha: str) -> list[Status]:
+        """The latest status of each context on a commit."""
+        return await self._fetch_pages(
+            f'repos/{repo}/commits/{sha}/status',
+            lambda content: _CombinedStatus.model_validate_json(content).statuses,
         )
 
     async def fetch_commit(self, repo: str, sha: str) -> Commit:
@@ -394,7 +486,7 @@ class GitHubClient:
         number: int,
     ) -> list[ReviewComment]:
         """Every comment on a pull request's diff, oldest first."""
-        return await self._fetch_all(
-            _REVIEW_COMMENTS,
+        return await self._fetch_pages(
             f'repos/{repo}/pulls/{number}/comments',
+            _REVIEW_COMMENTS.validate_json,
         )

@@ -2,8 +2,10 @@
 
 import contextlib
 import httpx
+import pytest
 from . import _fake_github
 from botwatch import github
+from botwatch.github import _api
 from botwatch.github import _watch
 from collections.abc import Sequence
 from datetime import datetime
@@ -111,6 +113,40 @@ class Test_apply_poll:
         )
         assert not second.events
 
+    def test__counts_found_events_and_records_checks(self) -> None:
+        state = github.GitHubState(
+            after=at(1),
+            head=_HEAD,
+            checks=github.CheckResult(head=_HEAD, conclusion=None),
+        )
+        concluded = github.ChecksConcluded(
+            id=f'checks-1-{_HEAD}-success',
+            time=at(5),
+            repo=_REPO,
+            pull=_PULL,
+            head=_HEAD,
+            conclusion='success',
+            failed=(),
+            pending=(),
+            url='https://github.com/',
+        )
+        checks = github.CheckResult(head=_HEAD, conclusion='success')
+
+        update = _watch._apply_poll(
+            state,
+            [],
+            settled_before=at(10),
+            head=_HEAD,
+            checks=checks,
+            found=[concluded],
+        )
+        kept = _watch._apply_poll(update.state, [], settled_before=at(10), head=_HEAD)
+
+        assert update.events == (concluded,)
+        assert update.state.checks == checks
+        assert update.state.checks_reports == 1
+        assert kept.state.checks == checks
+
     def test__without_new_events_keeps_the_state(self) -> None:
         state = github.GitHubState(after=at(1), seen={'comment-1': at(1)})
 
@@ -123,6 +159,116 @@ class Test_apply_poll:
 
         assert not update.events
         assert update.state == state.model_copy(update={'head': _HEAD})
+
+
+def _run(
+    name: str,
+    conclusion: str | None = 'success',
+    *,
+    run_id: int = 1,
+) -> _api.CheckRun:
+    return _api.CheckRun(
+        id=run_id,
+        name=name,
+        status='completed' if conclusion is not None else 'in_progress',
+        conclusion=conclusion,
+    )
+
+
+def _suite(
+    status: str,
+    runs: int,
+    *,
+    conclusion: str | None = None,
+    age: timedelta = timedelta(),
+) -> _api.CheckSuite:
+    return _api.CheckSuite.model_validate(
+        {
+            'status': status,
+            'conclusion': conclusion,
+            'latest_check_runs_count': runs,
+            'created_at': at(100) - age,
+            'app': {'name': 'CI'},
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ('runs', 'suites', 'statuses', 'verdict'),
+    [
+        ([], [], [], None),
+        (
+            [_run('test'), _run('lint')],
+            [_suite('completed', 2)],
+            [],
+            ('success', (), ()),
+        ),
+        (
+            [_run('test', 'failure'), _run('lint', None)],
+            [_suite('in_progress', 2)],
+            [],
+            ('failure', ('test',), ('lint',)),
+        ),
+        (
+            [_run('test', 'cancelled'), _run('lint')],
+            [_suite('completed', 2)],
+            [],
+            ('cancelled', ('test',), ()),
+        ),
+        ([_run('test')], [_suite('in_progress', 1)], [], None),  # jobs to come
+        ([_run('test')], [_suite('queued', 0, age=timedelta(seconds=10))], [], None),
+        (
+            [_run('test')],
+            [_suite('queued', 0, age=timedelta(hours=1))],
+            [],
+            ('success', (), ()),
+        ),
+        (
+            [],
+            [],
+            [_api.Status(context='ci/legacy', state='error')],
+            ('failure', ('ci/legacy',), ()),
+        ),
+        ([_run('test')], [], [_api.Status(context='ci/legacy', state='pending')], None),
+        (  # the same check, run again by a newer workflow run
+            [_run('test', 'failure', run_id=1), _run('test', run_id=2)],
+            [_suite('completed', 1), _suite('completed', 1)],
+            [],
+            ('success', (), ()),
+        ),
+        (  # waiting on a concurrency group
+            [_run('test')],
+            [_suite('pending', 0, age=timedelta(hours=1))],
+            [],
+            None,
+        ),
+        (  # a broken workflow file
+            [_run('test')],
+            [_suite('completed', 0, conclusion='startup_failure')],
+            [],
+            ('failure', ('CI',), ()),
+        ),
+        (  # a fork's workflow awaiting approval
+            [_run('test')],
+            [_suite('completed', 0, conclusion='action_required')],
+            [],
+            None,
+        ),
+    ],
+)
+def test_conclude(
+    runs: list[_api.CheckRun],
+    suites: list[_api.CheckSuite],
+    statuses: list[_api.Status],
+    verdict: tuple[str, tuple[str, ...], tuple[str, ...]] | None,
+) -> None:
+    result = _watch._conclude(runs, suites, statuses, now=at(100))
+
+    assert (
+        (result.conclusion, result.failed, result.pending)
+        if result is not None
+        else None
+    ) == verdict
 
 
 async def _poll_once(
@@ -155,7 +301,11 @@ class Test_watch:
                 checkpoint = await anext(source)
 
         assert not checkpoint.events
-        assert checkpoint.state == github.GitHubState(after=at(5), head=_HEAD)
+        assert checkpoint.state == github.GitHubState(
+            after=at(5),
+            head=_HEAD,
+            checks=github.CheckResult(head=_HEAD, conclusion=None),
+        )
 
     async def test__reports_comments_and_reviews(self) -> None:
         fake = _fake_github.FakeGitHub()
@@ -294,7 +444,7 @@ class Test_watch:
             nonlocal clock_reads
             if request.url.path == '/rate_limit':
                 clock_reads += 1
-                if clock_reads == 3:
+                if clock_reads == 4:  # the start, then the third poll
                     fake.comment(4)
 
         fake.after_each = comment_on_the_third_poll
@@ -316,7 +466,9 @@ class Test_watch:
             for index, request in enumerate(fake.requests)
             if request.url.path == '/rate_limit'
         ]
-        assert fake.statuses[clock_indexes[1] + 1 : clock_indexes[2]] == [304] * 4
+        # The head, comments, reviews, issue events, check runs, check suites
+        # and statuses.
+        assert fake.statuses[clock_indexes[2] + 1 : clock_indexes[3]] == [304] * 7
 
     async def test__records_a_missing_head_as_it_starts(self) -> None:
         fake = _fake_github.FakeGitHub()
@@ -357,3 +509,167 @@ class Test_watch:
             ('ready_for_review', 'maintainer'),
             ('closed', 'maintainer'),
         ]
+
+    async def test__records_the_conclusion_as_it_starts(self) -> None:
+        fake = _fake_github.FakeGitHub()
+        fake.check('test')
+
+        async with fake.create_client() as client:
+            source = github.watch(client, _REPO, _PULL, state=None)
+            async with contextlib.aclosing(source):
+                checkpoint = await anext(source)
+
+        assert checkpoint.state.checks == github.CheckResult(
+            head=_HEAD,
+            conclusion='success',
+        )
+
+    async def test__reports_a_conclusion_per_push_and_rerun(self) -> None:
+        fake = _fake_github.FakeGitHub(now=at(5))
+        fake.check('test', None)
+        conclusions: list[tuple[str, str, tuple[str, ...]]] = []
+
+        async with fake.create_client() as client:
+            source = github.watch(
+                client,
+                _REPO,
+                _PULL,
+                state=github.GitHubState(after=at(2), head=_HEAD),
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                for head, conclusion in [
+                    (_HEAD, 'failure'),
+                    (_HEAD, 'success'),  # re-run
+                    (_NEW_HEAD, 'success'),  # pushed
+                ]:
+                    if head != fake.head:
+                        fake.push(head)
+                    fake.check('test', conclusion)
+                    conclusions.extend(
+                        (event.head, event.conclusion, event.failed)
+                        for event in (await anext(source)).events
+                        if isinstance(event, github.ChecksConcluded)
+                    )
+
+        assert conclusions == [
+            (_HEAD, 'failure', ('test',)),
+            (_HEAD, 'success', ()),
+            (_NEW_HEAD, 'success', ()),
+        ]
+
+    async def test__reports_a_conclusion_reached_between_runs(self) -> None:
+        fake = _fake_github.FakeGitHub()
+        fake.check('test', None)
+
+        async with fake.create_client() as client:
+            first = github.watch(client, _REPO, _PULL, state=None)
+            async with contextlib.aclosing(first):
+                checkpoint = await anext(first)
+            fake.check('test', 'failure')
+            second = github.watch(
+                client,
+                _REPO,
+                _PULL,
+                state=checkpoint.state,
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(second):
+                await anext(second)
+                update = await anext(second)
+
+        assert [event.type for event in update.events] == ['github.checks_concluded']
+
+    async def test__reports_an_early_failure_once(self) -> None:
+        fake = _fake_github.FakeGitHub()
+        fake.check('lint', None)
+        fake.check('test', None)
+        fake.status('ci/legacy', 'pending')
+
+        async with fake.create_client() as client:
+            source = github.watch(
+                client,
+                _REPO,
+                _PULL,
+                state=github.GitHubState(after=at(2), head=_HEAD),
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                fake.check('test', 'failure')
+                early = await anext(source)
+                fake.check('lint', 'failure')
+                fake.status('ci/legacy', 'success')
+                fake.comment(3)
+                later = await anext(source)
+
+        assert [
+            (event.conclusion, event.failed, event.pending)
+            for event in early.events
+            if isinstance(event, github.ChecksConcluded)
+        ] == [('failure', ('test',), ('ci/legacy', 'lint'))]
+        assert [event.type for event in later.events] == ['github.comment_posted']
+
+    async def test__holds_back_success_while_a_suite_runs(self) -> None:
+        fake = _fake_github.FakeGitHub()
+        fake.check('build')
+        fake.suite('in_progress', 1)
+
+        async with fake.create_client() as client:
+            source = github.watch(
+                client,
+                _REPO,
+                _PULL,
+                state=github.GitHubState(after=at(2), head=_HEAD),
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                checkpoint = await anext(source)
+                fake.check('test')  # the job that waited on build
+                fake.suite('completed', 2)
+                update = await anext(source)
+
+        assert checkpoint.state.checks == github.CheckResult(
+            head=_HEAD, conclusion=None
+        )
+        assert [
+            event.conclusion
+            for event in update.events
+            if isinstance(event, github.ChecksConcluded)
+        ] == ['success']
+
+    async def test__reports_success_once_through_a_rerun(self) -> None:
+        fake = _fake_github.FakeGitHub()
+        fake.check('test')
+        fake.suite('in_progress', 1)  # a workflow running again on the head
+        clock_reads = 0
+
+        def finish_on_the_second_poll(request: httpx.Request) -> None:
+            nonlocal clock_reads
+            if request.url.path == '/rate_limit':
+                clock_reads += 1
+                if clock_reads == 2:
+                    fake.suite('completed', 1)
+                elif clock_reads == 3:
+                    fake.comment(3)
+
+        fake.after_each = finish_on_the_second_poll
+        async with fake.create_client() as client:
+            source = github.watch(
+                client,
+                _REPO,
+                _PULL,
+                state=github.GitHubState(
+                    after=at(2),
+                    head=_HEAD,
+                    checks=github.CheckResult(head=_HEAD, conclusion='success'),
+                    checks_reports=1,
+                ),
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                update = await anext(source)
+
+        assert [event.type for event in update.events] == ['github.comment_posted']

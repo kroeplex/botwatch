@@ -1,3 +1,5 @@
+# pylint: disable=protected-access
+
 """An in-memory GitHub pull request, served through :class:`httpx.MockTransport`."""
 
 import email.utils
@@ -30,6 +32,26 @@ def at(second: int) -> datetime:
     )
 
 
+def _serve_conditionally(
+    request: httpx.Request,
+    content: bytes,
+    headers: dict[str, str] | None = None,
+) -> httpx.Response:
+    """``content`` with an ``ETag``, or a bare 304 when the request names that
+    ``ETag``. ``headers`` go on a 200 only, as GitHub leaves ``Link`` out of a
+    304."""
+    etag = f'"{hashlib.sha1(content).hexdigest()}"'
+    if request.headers.get('If-None-Match') == etag:
+        response = httpx.Response(304, headers={'ETag': etag})
+    else:
+        response = httpx.Response(
+            200,
+            content=content,
+            headers={'ETag': etag, **(headers or {})},
+        )
+    return response
+
+
 @dataclass
 class FakeGitHub:
     """One pull request's comments, reviews, head and issue events, answering
@@ -56,6 +78,15 @@ class FakeGitHub:
     """Each pushed commit, by SHA."""
 
     issue_events: list[_api.IssueEvent] = field(default_factory=list)
+
+    check_runs: dict[str, list[_api.CheckRun]] = field(default_factory=dict)
+    """Each commit's checks, by SHA."""
+
+    check_suites: dict[str, list[_api.CheckSuite]] = field(default_factory=dict)
+    """Each commit's check suites, by SHA."""
+
+    commit_statuses: dict[str, list[_api.Status]] = field(default_factory=dict)
+    """Each commit's statuses, by SHA."""
 
     requests: list[httpx.Request] = field(default_factory=list)
 
@@ -164,14 +195,53 @@ class FakeGitHub:
             ),
         )
 
-    def _serve_head(self, request: httpx.Request) -> httpx.Response:
-        """The head's SHA, which is also its ``ETag``, as GitHub serves it."""
-        etag = f'"{self.head}"'
-        if request.headers.get('If-None-Match') == etag:
-            response = httpx.Response(304, headers={'ETag': etag})
+    def check(self, name: str, conclusion: str | None = 'success') -> None:
+        """Sets a check on the head: completed with ``conclusion``, or still
+        running when it's ``None``."""
+        runs = self.check_runs.setdefault(self.head, [])
+        runs[:] = [run for run in runs if run.name != name]
+        runs.append(
+            _api.CheckRun(
+                id=self._take_id(),
+                name=name,
+                status='completed' if conclusion is not None else 'in_progress',
+                conclusion=conclusion,
+            ),
+        )
+
+    def suite(self, status: str, runs: int) -> None:
+        """Sets the head's one check suite."""
+        self.check_suites[self.head] = [
+            _api.CheckSuite(
+                status=status,
+                latest_check_runs_count=runs,
+                created_at=self.now,
+            ),
+        ]
+
+    def status(self, context: str, state: str) -> None:
+        """Sets a commit status on the head."""
+        statuses = self.commit_statuses.setdefault(self.head, [])
+        statuses[:] = [status for status in statuses if status.context != context]
+        statuses.append(_api.Status(context=context, state=state))
+
+    def _serve_checks(self, request: httpx.Request) -> httpx.Response:
+        """A commit's check runs, check suites or combined status."""
+        _, sha, kind = request.url.path.rsplit('/', 2)
+        document: pydantic.BaseModel
+        if kind == 'check-runs':
+            document = _api._CheckRunsPage(check_runs=self.check_runs.get(sha, []))
+        elif kind == 'check-suites':
+            document = _api._CheckSuitesPage(
+                check_suites=self.check_suites.get(sha, []),
+            )
         else:
-            response = httpx.Response(200, text=self.head, headers={'ETag': etag})
-        return response
+            document = _api._CombinedStatus(statuses=self.commit_statuses.get(sha, []))
+        return _serve_conditionally(request, document.model_dump_json().encode())
+
+    def _serve_head(self, request: httpx.Request) -> httpx.Response:
+        """The head's SHA, as GitHub serves it, for the ``sha`` media type."""
+        return _serve_conditionally(request, self.head.encode())
 
     def _serve_commit(self, request: httpx.Request) -> httpx.Response:
         commit = self.commits[request.url.params['sha']]
@@ -219,15 +289,11 @@ class FakeGitHub:
             items[(page - 1) * size : page * size],
             serialize_as_any=True,
         )
-        headers = {'ETag': f'"{hashlib.sha1(content).hexdigest()}"'}
+        headers = {}
         if page * size < len(items):
             next_url = request.url.copy_merge_params({'page': str(page + 1)})
             headers['Link'] = f'<{next_url}>; rel="next"'
-        return (
-            httpx.Response(304, headers={'ETag': headers['ETag']})
-            if request.headers.get('If-None-Match') == headers['ETag']
-            else httpx.Response(200, content=content, headers=headers)
-        )
+        return _serve_conditionally(request, content, headers)
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -236,6 +302,8 @@ class FakeGitHub:
             response = self._serve_head(request)
         elif request.url.path == f'{_PREFIX}/commits':
             response = self._serve_commit(request)
+        elif request.url.path.endswith(('/check-runs', '/check-suites', '/status')):
+            response = self._serve_checks(request)
         elif request.url.path == '/rate_limit':
             response = httpx.Response(
                 200,

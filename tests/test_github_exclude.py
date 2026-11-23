@@ -77,3 +77,20 @@ def test_ExcludeRule__matches_a_push_by_committer_and_message(
     matches: bool,
 ) -> None:
     assert rule.matches(_PUSH) is matches
+
+
+def test_ExcludeRule__never_matches_a_checks_conclusion() -> None:
+    concluded = github.ChecksConcluded(
+        id='checks-1-a',
+        time=_fake_github.at(1),
+        repo=_fake_github.REPO,
+        pull=_fake_github.PULL,
+        head='a',
+        conclusion='success',
+        failed=(),
+        pending=(),
+        url='https://github.com/',
+    )
+
+    assert not github.ExcludeRule(user='octo-bot').matches(concluded)
+    assert not github.ExcludeRule(text=re.compile('.*')).matches(concluded)
