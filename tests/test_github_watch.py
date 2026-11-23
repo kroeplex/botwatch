@@ -172,6 +172,7 @@ def _run(
         name=name,
         status='completed' if conclusion is not None else 'in_progress',
         conclusion=conclusion,
+        completed_at=at(90 + run_id) if conclusion is not None else None,
     )
 
 
@@ -188,6 +189,7 @@ def _suite(
             'conclusion': conclusion,
             'latest_check_runs_count': runs,
             'created_at': at(100) - age,
+            'updated_at': at(100) - age,
             'app': {'name': 'CI'},
         },
     )
@@ -226,10 +228,15 @@ def _suite(
         (
             [],
             [],
-            [_api.Status(context='ci/legacy', state='error')],
+            [_api.Status(context='ci/legacy', state='error', updated_at=at(99))],
             ('failure', ('ci/legacy',), ()),
         ),
-        ([_run('test')], [], [_api.Status(context='ci/legacy', state='pending')], None),
+        (
+            [_run('test')],
+            [],
+            [_api.Status(context='ci/legacy', state='pending', updated_at=at(99))],
+            None,
+        ),
         (  # the same check, run again by a newer workflow run
             [_run('test', 'failure', run_id=1), _run('test', run_id=2)],
             [_suite('completed', 1), _suite('completed', 1)],
@@ -513,6 +520,7 @@ class Test_watch:
     async def test__records_the_conclusion_as_it_starts(self) -> None:
         fake = _fake_github.FakeGitHub()
         fake.check('test')
+        fake.now = at(5)  # the source starts after the checks finished
 
         async with fake.create_client() as client:
             source = github.watch(client, _REPO, _PULL, state=None)
@@ -666,6 +674,76 @@ class Test_watch:
                     checks=github.CheckResult(head=_HEAD, conclusion='success'),
                     checks_reports=1,
                 ),
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                update = await anext(source)
+
+        assert [event.type for event in update.events] == ['github.comment_posted']
+
+    @pytest.mark.parametrize(
+        ('start_after', 'reported'),
+        [(at(1), ['success']), (at(3), ['success']), (at(5), [])],
+    )
+    async def test__reports_a_conclusion_reached_since_its_start_position(
+        self,
+        start_after: datetime,
+        reported: list[str],
+    ) -> None:
+        fake = _fake_github.FakeGitHub(now=at(3))
+        fake.check('test')  # finished at 3
+        fake.now = at(10)
+        clock_reads = 0
+
+        def comment_on_the_first_poll(request: httpx.Request) -> None:
+            nonlocal clock_reads
+            if request.url.path == '/rate_limit':
+                clock_reads += 1
+                if clock_reads == 2:
+                    fake.comment(11)
+
+        fake.after_each = comment_on_the_first_poll
+        async with fake.create_client() as client:
+            source = github.watch(
+                client,
+                _REPO,
+                _PULL,
+                state=github.GitHubState(after=start_after),
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                update = await anext(source)
+
+        assert [
+            event.conclusion
+            for event in update.events
+            if isinstance(event, github.ChecksConcluded)
+        ] == reported
+
+    async def test__times_a_failure_by_its_first_failing_check(self) -> None:
+        fake = _fake_github.FakeGitHub(now=at(1))
+        fake.check('lint', 'failure')
+        fake.now = at(8)
+        fake.check('test')
+        fake.now = at(10)
+        clock_reads = 0
+
+        def comment_on_the_first_poll(request: httpx.Request) -> None:
+            nonlocal clock_reads
+            if request.url.path == '/rate_limit':
+                clock_reads += 1
+                if clock_reads == 2:
+                    fake.comment(11)
+
+        fake.after_each = comment_on_the_first_poll
+        async with fake.create_client() as client:
+            source = github.watch(
+                client,
+                _REPO,
+                _PULL,
+                state=github.GitHubState(after=at(5)),
                 poll_interval=_NO_WAIT,
             )
             async with contextlib.aclosing(source):

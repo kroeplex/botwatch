@@ -164,8 +164,8 @@ conversation doesn't include thread replies.
     draft and ready for review, from the pull request's issue events. The
     `closed` that comes with a merge is left out.
   - `github.checks_concluded` when the head's checks reach a conclusion other
-    than the last one reported or recorded for that head: `failure` as soon as a check run
-    or commit status fails, and otherwise, once all have finished,
+    than the last one reported or recorded for that head: `failure` as soon as
+    a check run or commit status fails, and otherwise, once all have finished,
     `cancelled` or `success`. Only each check's newest run counts, as a
     workflow can run again for the same commit. A check suite not yet
     completed holds back a success, since jobs that wait on others, or a
@@ -181,7 +181,12 @@ conversation doesn't include thread replies.
   its own count. A review is placed by when it was submitted rather than by
   its ID, which it takes while still pending. A push has no time of its own to
   place it by, so it's found by comparing the head with `head`, which a source
-  without one records as it starts, and timed by the poll that found it.
+  without one records as it starts, and timed by the poll that found it. A
+  source without `checks` records the conclusion as it starts too, unless it
+  was reached at or after `after`, such as since its `start_after`: that
+  conclusion is left for the first poll to report. A failure is reached when
+  its first failing check finished; any other conclusion, when the last check
+  did.
 - **Settling.** GitHub's timestamps don't follow the order in which events
   become visible, and a poll lists events in several calls. So `after` trails
   the newest event reported, by up to ten seconds before the poll began, and
