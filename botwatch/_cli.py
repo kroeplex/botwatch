@@ -143,18 +143,21 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
 @contextlib.contextmanager
 def _lock_config(path: Path) -> Iterator[None]:
-    """Holds an exclusive lock on the config, through a file beside it, so
-    concurrent edits don't lose each other's changes."""
-    target = path.resolve()
-    with contextlib.ExitStack() as stack:
-        try:
-            lock = stack.enter_context(
-                target.with_name(f'.{target.name}.lock').open('a', encoding='utf-8'),
-            )
-        except OSError as error:
-            _fail(f'cannot lock the config {path}: {error}')
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    """Holds an exclusive lock on the config's directory, which leaves no file
+    behind, so concurrent edits don't lose each other's changes."""
+    try:
+        descriptor = os.open(path.resolve().parent, os.O_RDONLY)
+    except OSError as error:
+        _fail(f'cannot lock the config {path}: {error}')
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    except OSError as error:
+        os.close(descriptor)
+        _fail(f'cannot lock the config {path}: {error}')
+    try:
         yield
+    finally:
+        os.close(descriptor)
 
 
 def _load_config(path: Path) -> _config.Config:

@@ -88,7 +88,7 @@ ends normally, a crashed run's events are repeated by the next run.
 
 `botwatch add` and `botwatch remove` load the config, change its sources
 (`Config.with_source`, `Config.without`), and write it back atomically,
-keeping just the settings it gives, under a lock on a file beside it. They
+keeping just the settings it gives, under a lock on its directory. They
 never touch the state file: since keys derive from
 what a source watches, an added source has no entry until a run saves one, and
 a removed source's entry is dropped by the next run's save. `botwatch show`

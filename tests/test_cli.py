@@ -372,6 +372,7 @@ class Test_main__add:
             '  - user: U0BOT\n'
         )
 
+    @pytest.mark.timeout(30)  # starts eight interpreters
     async def test__keeps_concurrent_additions(self, tmp_path: Path) -> None:
         path = tmp_path / 'watch.yaml'
         command = [sys.executable, '-m', 'botwatch', 'add', '--config', str(path)]

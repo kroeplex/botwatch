@@ -176,7 +176,7 @@ class Config(pydantic.BaseModel):
         return (
             json.dumps(document, indent=2) + '\n'
             if is_json
-            else yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
+            else yaml.safe_dump(document, sort_keys=False)
         )
 
     @classmethod

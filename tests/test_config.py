@@ -150,7 +150,11 @@ def test_Config__save__reads_back_unchanged(name: str, tmp_path: Path) -> None:
                 'C1',
                 thread_ts='1785600000.000200',
                 poll_interval='1500ms',
-                exclude=[{'bot_id': 'B0BOT', 'text': '(?i)^bot:'}, {'text': '^🤖'}],
+                exclude=[
+                    {'bot_id': 'B0BOT', 'text': '(?i)^bot:'},
+                    {'text': '^🤖'},
+                    {'user': 'a\x85b'},  # NEL, which YAML can misread as a line break
+                ],
             ),
         ),
     )

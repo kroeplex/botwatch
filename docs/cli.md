@@ -82,8 +82,7 @@ stderr and isn't an error. The next run drops their entries from the state file.
 
 `add` and `remove` rewrite the config atomically, keeping just the settings it
 gives, so comments and formatting in it are lost. A `.json` config stays JSON.
-They hold a lock on a hidden `.CONFIG.lock` file beside it, so edits made at
-the same time all land.
+They hold a lock on its directory, so edits made at the same time all land.
 
 ## `show`
 
