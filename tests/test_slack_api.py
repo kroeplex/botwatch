@@ -7,6 +7,7 @@ import pytest
 from botwatch import slack
 from botwatch.slack import _api
 from collections.abc import Iterator
+from datetime import timedelta
 from pytest_mock import MockerFixture
 
 _CONVERSATION = 'C0123456789'
@@ -167,3 +168,91 @@ def test_get_retry_delay(
     delay: float,
 ) -> None:
     assert _api._get_retry_delay(outcome, 4.0) == delay
+
+
+class Test_SlackClient__fetch_recent_history:
+    async def test__shares_one_call_while_fresh(self) -> None:
+        requests: list[httpx.Request] = []
+        responses: list[httpx.Response | httpx.TransportError] = [
+            _create_page('1785600002.000000', '1785600001.000000'),
+        ]
+
+        async with _create_client(responses, requests) as client:
+            histories = await asyncio.gather(
+                *[
+                    client.fetch_recent_history(
+                        _CONVERSATION,
+                        max_age=timedelta(minutes=1),
+                    )
+                    for _ in range(3)
+                ],
+            )
+
+        assert len(requests) == 1
+        assert all(history == histories[0] for history in histories)
+        assert [message.ts for message in histories[0].messages] == [
+            '1785600001.000000',
+            '1785600002.000000',
+        ]
+        assert histories[0].is_complete
+
+    async def test__fetches_again_once_stale(self) -> None:
+        requests: list[httpx.Request] = []
+        responses: list[httpx.Response | httpx.TransportError] = [
+            _create_page('1785600001.000000'),
+            _create_page('1785600002.000000', '1785600001.000000'),
+        ]
+
+        async with _create_client(responses, requests) as client:
+            await client.fetch_recent_history(_CONVERSATION, max_age=timedelta(0))
+            history = await client.fetch_recent_history(
+                _CONVERSATION,
+                max_age=timedelta(0),
+            )
+
+        assert len(requests) == 2
+        assert len(history.messages) == 2
+
+    async def test__does_not_keep_a_failure(self) -> None:
+        requests: list[httpx.Request] = []
+        responses: list[httpx.Response | httpx.TransportError] = [
+            httpx.Response(200, json={'ok': False, 'error': 'not_in_channel'}),
+            _create_page('1785600001.000000'),
+        ]
+
+        async with _create_client(responses, requests) as client:
+            with pytest.raises(slack.SlackError):
+                await client.fetch_recent_history(
+                    _CONVERSATION,
+                    max_age=timedelta(minutes=1),
+                )
+            history = await client.fetch_recent_history(
+                _CONVERSATION,
+                max_age=timedelta(minutes=1),
+            )
+
+        assert len(requests) == 2
+        assert len(history.messages) == 1
+
+
+@pytest.mark.parametrize(
+    ('timestamps', 'is_complete', 'after', 'covers'),
+    [
+        (['1785600002.000000'], True, '1785600000.000000', True),
+        (['1785600002.000000'], False, '1785600002.000000', True),
+        (['1785600002.000000'], False, '1785600001.000000', False),
+        ([], False, '1785600001.000000', False),
+    ],
+)
+def test_RecentHistory__covers(
+    timestamps: list[str],
+    is_complete: bool,
+    after: str,
+    covers: bool,
+) -> None:
+    history = _api.RecentHistory(
+        messages=tuple(_api.Message(ts=ts) for ts in timestamps),
+        is_complete=is_complete,
+    )
+
+    assert history.covers(after) is covers

@@ -1,6 +1,7 @@
 """A thin async client for the parts of the Slack Web API that botwatch reads."""
 
 import asyncio
+import collections
 import http
 import httpx
 import logging
@@ -11,6 +12,7 @@ from collections.abc import Mapping
 from dataclasses import InitVar
 from dataclasses import dataclass
 from dataclasses import field
+from datetime import timedelta
 from typing import Self
 
 _BASE_URL = 'https://slack.com/api/'
@@ -71,9 +73,38 @@ class _MessagesPage(pydantic.BaseModel):
     ok: bool
     error: str = ''
     messages: tuple[Message, ...] = ()
+    has_more: bool = False
     response_metadata: _ResponseMetadata = pydantic.Field(
         default_factory=_ResponseMetadata,
     )
+
+
+@dataclass(frozen=True)
+class RecentHistory:
+    """A conversation's newest top-level messages, from one history page."""
+
+    messages: tuple[Message, ...]
+    """Oldest first."""
+
+    is_complete: bool
+    """Whether these are all of the conversation's top-level messages."""
+
+    def covers(self, after: _ts.SlackTs) -> bool:
+        """Whether every top-level message after ``after`` is here."""
+        return self.is_complete or (
+            bool(self.messages) and self.messages[0].ts <= after
+        )
+
+    def find(self, ts: _ts.SlackTs) -> Message | None:
+        return next((message for message in self.messages if message.ts == ts), None)
+
+
+@dataclass(frozen=True)
+class _CachedHistory:
+    fetched_at: float
+    """The event loop's clock when the fetch started."""
+
+    history: RecentHistory
 
 
 type _Outcome = httpx.Response | httpx.TransportError
@@ -136,6 +167,16 @@ class SlackClient:
     """Replaces the network, e.g. with :class:`httpx.MockTransport` in tests."""
 
     _http: httpx.AsyncClient = field(init=False)
+
+    _recent_histories: dict[str, _CachedHistory] = field(
+        init=False,
+        default_factory=dict,
+    )
+
+    _recent_history_locks: collections.defaultdict[str, asyncio.Lock] = field(
+        init=False,
+        default_factory=lambda: collections.defaultdict(asyncio.Lock),
+    )
 
     def __post_init__(
         self,
@@ -241,28 +282,51 @@ class SlackClient:
         )
         return [message for message in messages if message.ts != thread_ts]
 
-    async def fetch_latest_ts(
+    async def fetch_recent_history(
         self,
         conversation: str,
         *,
-        thread_ts: _ts.SlackTs | None = None,
-    ) -> _ts.SlackTs | None:
-        """The ``ts`` of the newest message at a conversation's top level, or of
-        a thread's newest reply (its parent's when it has none).
+        max_age: timedelta,
+    ) -> RecentHistory:
+        """The conversation's newest top-level messages, fetched at most once per
+        ``max_age`` however many sources ask.
 
-        ``None`` for a conversation without messages.
+        Sources watching one conversation and its threads share this one call:
+        a thread's parent carries ``latest_reply``, so a thread with no new
+        replies costs no call of its own.
         """
-        if thread_ts is None:
-            page = await self._get_messages_page(
-                'conversations.history',
-                {'channel': conversation, 'limit': '1'},
-            )
-            latest = page.messages[0].ts if page.messages else None
-        else:
-            page = await self._get_messages_page(
-                'conversations.replies',
-                {'channel': conversation, 'ts': thread_ts, 'limit': '1'},
-            )
-            parent = page.messages[0]
-            latest = parent.latest_reply or parent.ts
-        return latest
+        async with self._recent_history_locks[conversation]:
+            loop = asyncio.get_running_loop()
+            cached = self._recent_histories.get(conversation)
+            if (
+                cached is None
+                or loop.time() - cached.fetched_at > max_age.total_seconds()
+            ):
+                fetched_at = loop.time()
+                page = await self._get_messages_page(
+                    'conversations.history',
+                    {'channel': conversation, 'limit': str(_PAGE_SIZE)},
+                )
+                cached = _CachedHistory(
+                    fetched_at=fetched_at,
+                    history=RecentHistory(
+                        messages=tuple(_combine_message_pages([page])),
+                        is_complete=not page.has_more,
+                    ),
+                )
+                self._recent_histories[conversation] = cached
+        return cached.history
+
+    async def fetch_latest_reply_ts(
+        self,
+        conversation: str,
+        thread_ts: _ts.SlackTs,
+    ) -> _ts.SlackTs:
+        """The ``ts`` of a thread's newest reply, or its parent's when it has
+        none."""
+        page = await self._get_messages_page(
+            'conversations.replies',
+            {'channel': conversation, 'ts': thread_ts, 'limit': '1'},
+        )
+        parent = page.messages[0]
+        return parent.latest_reply or parent.ts
