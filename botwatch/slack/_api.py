@@ -49,7 +49,10 @@ class Message(pydantic.BaseModel):
 
     ts: _ts.SlackTs
     thread_ts: _ts.SlackTs | None = None
+
     latest_reply: _ts.SlackTs | None = None
+    """The ``ts`` of the thread's newest reply, on a parent with replies."""
+
     user: str | None = None
     bot_id: str | None = None
     username: str | None = None

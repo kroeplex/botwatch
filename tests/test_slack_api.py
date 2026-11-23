@@ -110,6 +110,27 @@ class Test_SlackClient__fetch_history:
         assert raised.value.method == 'conversations.history'
         assert raised.value.error == 'channel_not_found'
 
+    async def test__backs_off_exponentially(
+        self,
+        mocker: MockerFixture,
+    ) -> None:
+        mocker.patch.object(_api, '_INITIAL_BACKOFF', 16.0)
+        sleep = mocker.patch.object(asyncio, 'sleep')
+        responses: list[httpx.Response | httpx.TransportError] = [
+            *[httpx.Response(503)] * 4,
+            _create_page('1785600001.000000'),
+        ]
+
+        async with _create_client(responses, []) as client:
+            await client.fetch_history(_CONVERSATION, oldest=_OLDEST)
+
+        assert [call.args[0] for call in sleep.call_args_list] == [
+            16.0,
+            32.0,
+            60.0,
+            60.0,
+        ]
+
 
 async def test_SlackClient__fetch_replies__omits_the_parent() -> None:
     requests: list[httpx.Request] = []
@@ -146,19 +167,3 @@ def test_get_retry_delay(
     delay: float,
 ) -> None:
     assert _api._get_retry_delay(outcome, 4.0) == delay
-
-
-async def test_SlackClient__fetch_history__backs_off_exponentially(
-    mocker: MockerFixture,
-) -> None:
-    mocker.patch.object(_api, '_INITIAL_BACKOFF', 16.0)
-    sleep = mocker.patch.object(asyncio, 'sleep')
-    responses: list[httpx.Response | httpx.TransportError] = [
-        *[httpx.Response(503)] * 4,
-        _create_page('1785600001.000000'),
-    ]
-
-    async with _create_client(responses, []) as client:
-        await client.fetch_history(_CONVERSATION, oldest=_OLDEST)
-
-    assert [call.args[0] for call in sleep.call_args_list] == [16.0, 32.0, 60.0, 60.0]

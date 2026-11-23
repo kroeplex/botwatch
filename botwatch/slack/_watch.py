@@ -137,7 +137,11 @@ async def watch(
     current = (
         state
         if state is not None
-        else await _fetch_start_state(client, conversation, thread_ts=thread_ts)
+        else await _fetch_start_state(
+            client,
+            conversation,
+            thread_ts=thread_ts,
+        )
     )
     yield _source.Update(events=(), state=current)
 
