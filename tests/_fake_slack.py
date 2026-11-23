@@ -54,20 +54,26 @@ class FakeSlack:
         oldest = params.get('oldest', '0')
         if method == 'conversations.history':
             matching = [
-                message for message in reversed(self.history) if message.ts > oldest
+                self._add_latest_reply(message)
+                for message in reversed(self.history)
+                if message.ts > oldest
             ]
         else:
             thread = self.replies.get(params['ts'], [])
             matching = [message for message in thread if message.ts > oldest]
         return matching
 
-    def _get_parent(self, thread_ts: str) -> _api.Message:
-        """A thread's parent as replies return it, with its newest reply."""
-        parent = next(message for message in self.history if message.ts == thread_ts)
-        replies = self.replies.get(thread_ts, [])
-        return parent.model_copy(
+    def _add_latest_reply(self, message: _api.Message) -> _api.Message:
+        """A top-level message as Slack returns it: a parent carries its newest
+        reply."""
+        replies = self.replies.get(message.ts, [])
+        return message.model_copy(
             update={'latest_reply': replies[-1].ts if replies else None},
         )
+
+    def _get_parent(self, thread_ts: str) -> _api.Message:
+        parent = next(message for message in self.history if message.ts == thread_ts)
+        return self._add_latest_reply(parent)
 
     def _serve_messages(self, request: httpx.Request) -> httpx.Response:
         method = request.url.path.rsplit('/', 1)[-1]
@@ -84,6 +90,7 @@ class FakeSlack:
             json={
                 'ok': True,
                 'messages': [message.model_dump(exclude_none=True) for message in page],
+                'has_more': end < len(matching),
                 'response_metadata': {
                     'next_cursor': str(end) if end < len(matching) else '',
                 },

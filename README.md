@@ -127,9 +127,11 @@ Each source watches one thing: a conversation's top level, or one thread.
 Slack's history of a conversation doesn't include thread replies, so watch each
 thread you care about as its own source.
 
-Each source polls Slack once per `poll_interval`. Slack rate-limits each
-method to about 50 calls a minute per app, so with many threads, raise
-`poll_interval` or prune the watch set.
+Sources on one conversation share a single history call each
+`poll_interval`. A thread makes a call of its own only when it has a new reply,
+or when its first message is older than the conversation's latest 200 messages.
+Slack rate-limits each method to about 50 calls a minute per app, so with many
+busy or old threads, raise `poll_interval` or prune the watch set.
 
 A source's identity is derived from what it watches, such as
 `slack:C0123456789/1785600000.000200`, so the state file needs no migration as

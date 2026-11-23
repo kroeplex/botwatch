@@ -1,7 +1,9 @@
 # pylint: disable=protected-access
 
 import asyncio
+import botwatch
 import contextlib
+import httpx
 from . import _fake_slack
 from botwatch import slack
 from botwatch.slack import _api
@@ -62,6 +64,27 @@ class Test_apply_poll:
         assert update.state == state
 
 
+async def _poll_for(
+    sources: dict[str, botwatch.Source[slack.SlackState, slack.MessagePosted]],
+    seconds: float,
+) -> list[slack.MessagePosted]:
+    """Runs ``sources`` together for ``seconds`` and returns their events."""
+    events: list[slack.MessagePosted] = []
+    updates = botwatch.select(
+        sources,
+        quiet_timeout=timedelta(seconds=seconds),
+        linger=timedelta(seconds=seconds),
+    )
+    async with contextlib.aclosing(updates):
+        async for _key, task in updates:
+            events.extend((await task).events)
+    return events
+
+
+def _count_calls(fake: _fake_slack.FakeSlack, method: str) -> int:
+    return sum(request.url.path.endswith(method) for request in fake.requests)
+
+
 class Test_watch:
     async def test__starts_after_the_newest_message(self) -> None:
         fake = _fake_slack.FakeSlack()
@@ -120,6 +143,31 @@ class Test_watch:
                 checkpoint = await anext(source)
 
         assert checkpoint.state == slack.SlackState(after=_ts.EPOCH)
+
+    async def test__starts_after_the_newest_message_past_an_empty_page(self) -> None:
+        def handle(request: httpx.Request) -> httpx.Response:
+            is_first_page = 'cursor' not in request.url.params
+            return httpx.Response(
+                200,
+                json={
+                    'ok': True,
+                    'messages': (
+                        [] if is_first_page else [{'ts': '1785600002.000000'}]
+                    ),
+                    'has_more': is_first_page,
+                    'response_metadata': {
+                        'next_cursor': 'next' if is_first_page else '',
+                    },
+                },
+            )
+
+        transport = httpx.MockTransport(handle)
+        async with slack.SlackClient('xoxb-test', transport=transport) as client:
+            source = slack.watch(client, _CONVERSATION, state=None)
+            async with contextlib.aclosing(source):
+                checkpoint = await anext(source)
+
+        assert checkpoint.state == slack.SlackState(after='1785600002.000000')
 
     async def test__resumes_from_the_state(self) -> None:
         fake = _fake_slack.FakeSlack()
@@ -196,3 +244,138 @@ class Test_watch:
             ('new 3', '1785600001.000000'),
         ]
         assert sum('cursor' in request.url.params for request in fake.requests) == 1
+
+    async def test__idle_threads_make_no_calls_of_their_own(self) -> None:
+        fake = _fake_slack.FakeSlack(page_size=50)
+        parents = ['1785600001.000000', '1785600002.000000', '1785600003.000000']
+        for number, parent in enumerate(parents):
+            fake.post(parent)
+            fake.post(f'178560001{number}.000000', thread_ts=parent)
+
+        async with fake.create_client() as client:
+            sources = {
+                parent: slack.watch(
+                    client,
+                    _CONVERSATION,
+                    state=slack.SlackState(after=f'178560001{number}.000000'),
+                    thread_ts=parent,
+                    poll_interval=timedelta(seconds=0.05),
+                )
+                for number, parent in enumerate(parents)
+            }
+            events = await _poll_for(sources, 0.3)
+
+        assert not events
+        assert _count_calls(fake, 'conversations.replies') == 0
+        # About one shared call per polling round, not one per source per round.
+        assert _count_calls(fake, 'conversations.history') <= 9
+
+    async def test__a_thread_with_a_new_reply_fetches_it(self) -> None:
+        fake = _fake_slack.FakeSlack(page_size=50)
+        fake.post('1785600001.000000')
+        fake.post('1785600002.000000', thread_ts='1785600001.000000', text='new')
+
+        async with fake.create_client() as client:
+            source = slack.watch(
+                client,
+                _CONVERSATION,
+                state=slack.SlackState(after='1785600001.000000'),
+                thread_ts='1785600001.000000',
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                update = await anext(source)
+
+        assert [event.text for event in update.events] == ['new']
+
+    async def test__a_stale_page_only_delays_a_reply(self) -> None:
+        fake = _fake_slack.FakeSlack(page_size=50)
+        fake.post('1785600001.000000')
+        poll_interval = timedelta(seconds=0.4)
+
+        async with fake.create_client() as client:
+            await client.fetch_recent_history(_CONVERSATION, max_age=_NO_WAIT)
+            fake.post('1785600002.000000', thread_ts='1785600001.000000', text='new')
+            source = slack.watch(
+                client,
+                _CONVERSATION,
+                state=slack.SlackState(after='1785600001.000000'),
+                thread_ts='1785600001.000000',
+                poll_interval=poll_interval,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                started = asyncio.get_running_loop().time()
+                update = await anext(source)
+                waited = asyncio.get_running_loop().time() - started
+
+        # The first poll found nothing in the still-fresh page, without a call.
+        assert waited >= poll_interval.total_seconds()
+        assert [event.text for event in update.events] == ['new']
+        assert _count_calls(fake, 'conversations.replies') == 1
+
+    async def test__a_thread_out_of_view_polls_on_its_own(self) -> None:
+        fake = _fake_slack.FakeSlack(page_size=2)
+        fake.post('1785600001.000000')  # the parent, older than the page
+        fake.post('1785600002.000000', thread_ts='1785600001.000000', text='new')
+        for second in [3, 4, 5]:
+            fake.post(f'178560000{second}.000000')
+
+        async with fake.create_client() as client:
+            source = slack.watch(
+                client,
+                _CONVERSATION,
+                state=slack.SlackState(after='1785600001.000000'),
+                thread_ts='1785600001.000000',
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                update = await anext(source)
+
+        assert [event.text for event in update.events] == ['new']
+
+    async def test__the_top_level_reads_the_shared_history(self) -> None:
+        fake = _fake_slack.FakeSlack(page_size=50)
+        for second in [1, 2, 3]:
+            fake.post(f'178560000{second}.000000')
+
+        async with fake.create_client() as client:
+            source = slack.watch(
+                client,
+                _CONVERSATION,
+                state=slack.SlackState(after='1785600001.000000'),
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                update = await anext(source)
+
+        assert [event.ts for event in update.events] == [
+            '1785600002.000000',
+            '1785600003.000000',
+        ]
+        assert not any('oldest' in request.url.params for request in fake.requests)
+
+    async def test__the_top_level_reads_further_back_when_it_must(self) -> None:
+        fake = _fake_slack.FakeSlack(page_size=2)
+        for second in [1, 2, 3, 4]:
+            fake.post(f'178560000{second}.000000')
+
+        async with fake.create_client() as client:
+            source = slack.watch(
+                client,
+                _CONVERSATION,
+                state=slack.SlackState(after='1785600001.000000'),
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                update = await anext(source)
+
+        assert [event.ts for event in update.events] == [
+            '1785600002.000000',
+            '1785600003.000000',
+            '1785600004.000000',
+        ]
