@@ -104,18 +104,20 @@ def _find_latest_ts(
     thread_ts: _ts.SlackTs | None,
 ) -> _ts.SlackTs | None:
     """The newest ``ts`` at the top level, or in a thread whose parent is in
-    ``recent``, or ``None`` when the parent isn't there.
+    ``recent``, or ``None`` when ``recent`` can't tell.
 
-    The newest top-level message is always in ``recent``, so an empty one means
-    an empty conversation, which starts at the beginning.
+    An empty conversation starts at the beginning. Slack can return an empty
+    page while more remain, which tells nothing.
     """
     if thread_ts is None:
         latest: _ts.SlackTs | None = (
-            recent.messages[-1].ts if recent.messages else _ts.EPOCH
+            recent.messages[-1].ts
+            if recent.messages
+            else (_ts.EPOCH if recent.is_complete else None)
         )
     else:
         parent = recent.find(thread_ts)
-        latest = (parent.latest_reply or parent.ts) if parent is not None else None
+        latest = parent.latest_ts if parent is not None else None
     return latest
 
 
@@ -136,8 +138,11 @@ async def _fetch_start_state(
     recent = await client.fetch_recent_history(conversation, max_age=max_age)
     latest = _find_latest_ts(recent, thread_ts)
     if latest is None:
-        assert thread_ts is not None  # the top level always has an answer
-        latest = await client.fetch_latest_reply_ts(conversation, thread_ts)
+        latest = await (
+            client.fetch_latest_ts(conversation)
+            if thread_ts is None
+            else client.fetch_latest_reply_ts(conversation, thread_ts)
+        )
     return SlackState(after=latest)
 
 
@@ -164,7 +169,7 @@ async def _fetch_new_messages(
             messages = await client.fetch_history(conversation, oldest=after)
     else:
         parent = recent.find(thread_ts)
-        if parent is not None and (parent.latest_reply or parent.ts) <= after:
+        if parent is not None and parent.latest_ts <= after:
             messages = []
         else:
             messages = await client.fetch_replies(conversation, thread_ts, oldest=after)

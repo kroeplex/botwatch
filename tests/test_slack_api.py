@@ -24,6 +24,7 @@ def _create_page(
         json={
             'ok': True,
             'messages': [{'ts': ts, 'text': f'at {ts}'} for ts in timestamps],
+            'has_more': bool(next_cursor),
             'response_metadata': {'next_cursor': next_cursor},
         },
     )
@@ -234,6 +235,61 @@ class Test_SlackClient__fetch_recent_history:
         assert len(requests) == 2
         assert len(history.messages) == 1
 
+    async def test__callers_queued_behind_a_slow_fetch_share_it(self) -> None:
+        requests: list[httpx.Request] = []
+
+        async def handle(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            await asyncio.sleep(0.1)  # outlasts max_age
+            return _create_page('1785600001.000000')
+
+        transport = httpx.MockTransport(handle)
+        async with slack.SlackClient('xoxb-test', transport=transport) as client:
+            await asyncio.gather(
+                *[
+                    client.fetch_recent_history(
+                        _CONVERSATION,
+                        max_age=timedelta(milliseconds=50),
+                    )
+                    for _ in range(3)
+                ],
+            )
+
+        assert len(requests) == 1
+
+    async def test__survives_cancelling_the_caller_fetching(self) -> None:
+        requests: list[httpx.Request] = []
+        fetching = asyncio.Event()
+
+        async def handle(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if len(requests) == 1:
+                fetching.set()
+                await asyncio.Event().wait()  # until cancelled
+            return _create_page('1785600001.000000')
+
+        transport = httpx.MockTransport(handle)
+        async with slack.SlackClient('xoxb-test', transport=transport) as client:
+            first = asyncio.create_task(
+                client.fetch_recent_history(
+                    _CONVERSATION, max_age=timedelta(minutes=1)
+                ),
+            )
+            await fetching.wait()
+            second = asyncio.create_task(
+                client.fetch_recent_history(
+                    _CONVERSATION, max_age=timedelta(minutes=1)
+                ),
+            )
+            await asyncio.sleep(0)  # until it waits for the lock
+            first.cancel()
+            history = await second
+
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert len(requests) == 2
+        assert len(history.messages) == 1
+
 
 @pytest.mark.parametrize(
     ('timestamps', 'is_complete', 'after', 'covers'),
@@ -242,6 +298,8 @@ class Test_SlackClient__fetch_recent_history:
         (['1785600002.000000'], False, '1785600002.000000', True),
         (['1785600002.000000'], False, '1785600001.000000', False),
         ([], False, '1785600001.000000', False),
+        ([], True, '0000000000.000000', True),
+        (['1785600002.000000'], False, '0000000000.000000', False),
     ],
 )
 def test_RecentHistory__covers(

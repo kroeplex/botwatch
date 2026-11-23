@@ -61,6 +61,12 @@ class Message(pydantic.BaseModel):
     subtype: str | None = None
     text: str = ''
 
+    @property
+    def latest_ts(self) -> _ts.SlackTs:
+        """The ``ts`` of its thread's newest reply, or its own when it has
+        none."""
+        return self.latest_reply or self.ts
+
 
 class _ResponseMetadata(pydantic.BaseModel):
     next_cursor: str = ''
@@ -73,7 +79,11 @@ class _MessagesPage(pydantic.BaseModel):
     ok: bool
     error: str = ''
     messages: tuple[Message, ...] = ()
-    has_more: bool = False
+
+    has_more: bool = True
+    """Whether more messages remain. Assumed when Slack doesn't say, so a page
+    is never mistaken for the whole history."""
+
     response_metadata: _ResponseMetadata = pydantic.Field(
         default_factory=_ResponseMetadata,
     )
@@ -295,12 +305,15 @@ class SlackClient:
         a thread's parent carries ``latest_reply``, so a thread with no new
         replies costs no call of its own.
         """
+        loop = asyncio.get_running_loop()
+        # Judged from when the caller asked, so callers queued behind a slow
+        # fetch share it rather than each fetching again.
+        requested_at = loop.time()
         async with self._recent_history_locks[conversation]:
-            loop = asyncio.get_running_loop()
             cached = self._recent_histories.get(conversation)
             if (
                 cached is None
-                or loop.time() - cached.fetched_at > max_age.total_seconds()
+                or requested_at - cached.fetched_at > max_age.total_seconds()
             ):
                 fetched_at = loop.time()
                 page = await self._get_messages_page(
@@ -317,6 +330,22 @@ class SlackClient:
                 self._recent_histories[conversation] = cached
         return cached.history
 
+    async def fetch_latest_ts(self, conversation: str) -> _ts.SlackTs:
+        """The ``ts`` of the conversation's newest top-level message, or
+        ``EPOCH`` when it has none.
+
+        Slack can return an empty page while more remain, so this follows the
+        cursor until a page holds a message.
+        """
+        params = {'channel': conversation, 'limit': str(_PAGE_SIZE)}
+        page = await self._get_messages_page('conversations.history', params)
+        while not page.messages and page.response_metadata.next_cursor:
+            page = await self._get_messages_page(
+                'conversations.history',
+                {**params, 'cursor': page.response_metadata.next_cursor},
+            )
+        return max((message.ts for message in page.messages), default=_ts.EPOCH)
+
     async def fetch_latest_reply_ts(
         self,
         conversation: str,
@@ -328,5 +357,4 @@ class SlackClient:
             'conversations.replies',
             {'channel': conversation, 'ts': thread_ts, 'limit': '1'},
         )
-        parent = page.messages[0]
-        return parent.latest_reply or parent.ts
+        return page.messages[0].latest_ts

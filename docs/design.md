@@ -105,12 +105,14 @@ is listening.
   nothing yields nothing.
 - **Sharing a conversation.** Every source on one conversation reads the same
   `conversations.history` page, the conversation's newest 200 top-level
-  messages. The client caches it for half a poll interval, so sources polling
-  in step share one call.
+  messages. A caller gets any page fetched up to half its poll interval before
+  it asked, so sources polling in step share one call, even a slow one.
   - **A thread** looks up its first message in that page. Slack marks it with
     `latest_reply`, and when that isn't after the thread's `after`, the thread
     has nothing new and makes no call. Otherwise, or when the first message is
-    older than the page, it calls `conversations.replies`.
+    older than the page, it calls `conversations.replies`. A stale page can
+    delay a reply by up to its age, but never skip one, since a thread only
+    advances on its own `conversations.replies` result.
   - **The top level** reads the page directly whenever the page reaches back to
     `after`, and otherwise calls `conversations.history` from `after`,
     following pagination.
