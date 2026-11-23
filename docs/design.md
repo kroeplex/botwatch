@@ -1,6 +1,6 @@
 # botwatch design
 
-How botwatch works now, for someone who has never seen it. This document
+How botwatch works, for someone who has never seen it. This document
 describes the code, and the code wins any disagreement; a PR that changes what
 is described here updates it. For the reasoning that led here, see the design
 proposal, [0015](issues/0015.md).
@@ -88,10 +88,14 @@ ends normally, a crashed run's events are repeated by the next run.
 
 `slack.watch(client, conversation, state=…, thread_ts=…, poll_interval=…)`
 (`slack/_watch.py`) watches a conversation's top level through
-`conversations.history`, or one thread through `conversations.replies`.
+`conversations.history`, or one thread through `conversations.replies`. It
+polls because only the Web API covers the gaps between runs: Slack keeps the
+backlog, while the Events API and Socket Mode drop whatever arrives when no run
+is listening.
 
-- **State.** The state is one position, `after`: the `ts` of the newest message
-  reported. A Slack `ts` is fixed-width, so string order is time order.
+- **State.** The state is one position, `after`: the source reports only
+  messages after this `ts`. A Slack `ts` is fixed-width, so string order is
+  time order.
 - **Starting.** A fresh source starts just after the newest message already
   there. That position comes from Slack rather than the local clock, so clock
   skew can't skip or repeat a message. An empty conversation starts at the
@@ -134,8 +138,11 @@ set in it matches, and a message is skipped when any rule matches.
 
 Adding a source type means adding:
 - a generator that yields updates;
-- its state and event models, with event types added to the output union;
-- a config model with a `key` and a `watch(client, state=…)` method.
+- its state model, with a `type` literal, to `SourceState` (`_state.py`);
+- its event models, to the output union (`_run.py`);
+- a config model with a `key` and a `watch(client, state=…)` method, to
+  `Config.sources`;
+- its client, created in `_cli.py` and passed through `run_once`.
 
 ## Design specs
 
@@ -144,10 +151,12 @@ by a test, and a change to one is a deliberate decision.
 
 ### Where a run ends never changes what is emitted
 
-For every source whose state has been saved, and given the same observations,
-successive runs emit the same sequence of that source's events once repeats are
-dropped by `(source, id)`, `botwatch.*` events aside. This holds however each
-run ends, a crash included. Only a crash may repeat events, and none skips one.
+For every source whose state has been saved, and given the same activity at
+that source, the events successive runs emit for it form the same sequence
+however each run ends, a crash included, once repeats are dropped by
+`(source, id)` and `botwatch.*` events are ignored. Only a run that ends
+without saving its state, such as a crash, may cause repeats, and no event is
+ever skipped.
 
 A new source's state is first saved by a run that ends normally after the
 source has delivered its first update. Until then, each run starts it from that

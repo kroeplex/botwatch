@@ -10,7 +10,7 @@ fit together; the docstrings have the details.
 | `Source[StateT, EventT]` | A source: an async generator of `Update`s that yields forever. Its first update is a checkpoint, and its consumer closes it. |
 | `Update[StateT, EventT]` | Zero or more `events`, and the source's full `state` after them. |
 | `Event` | The base of every event model: `type`, `id` and `time`. |
-| `select(sources, *, quiet_timeout, linger)` | Waits on a mapping of sources at once until the run departs, yielding `(key, task)` pairs as [`turbopipes.aselect`](https://github.com/kkroening/turbopipes) does. |
+| `select(sources, *, quiet_timeout, linger)` | Waits on a mapping of sources at once, yielding `(key, task)` pairs as [`turbopipes.aselect`](https://github.com/kkroening/turbopipes) does, until `linger` after the first update with events, or `quiet_timeout` if none comes. |
 | `exclude_events(source, is_excluded)` | A stage that drops matching events but keeps each update's state. |
 
 ## `botwatch.slack`
@@ -19,7 +19,7 @@ fit together; the docstrings have the details.
 | --- | --- |
 | `SlackClient(token)` | An async Web API client for one token, used as an async context manager. It retries transient failures. |
 | `watch(client, conversation, *, state, thread_ts=None, poll_interval=DEFAULT_POLL_INTERVAL)` | A source for a conversation's top level, or with `thread_ts` one thread. |
-| `SlackState` | A Slack source's state: `after`, the newest `ts` reported. |
+| `SlackState` | A Slack source's state: `after`; the source reports only messages after this `ts`. |
 | `MessagePosted` | The `slack.message_posted` event. |
 | `ExcludeRule` | A rule over `user`, `bot_id`, `username` and a `text` regex. |
 | `SlackError` | Raised when Slack answers `"ok": false`. |
@@ -31,6 +31,7 @@ fit together; the docstrings have the details.
 import asyncio
 import botwatch
 import contextlib
+import os
 from botwatch import slack
 from datetime import timedelta
 
@@ -56,4 +57,7 @@ async def main(token: str) -> None:
                 update = await task  # raises what the source raised
                 for event in update.events:
                     print(key, event.text)
+
+
+asyncio.run(main(os.environ['SLACK_TOKEN']))
 ```

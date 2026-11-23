@@ -20,7 +20,7 @@ stdout as JSON lines, saves the state, and exits.
 
 **Exit status:**
 - **0:** a normal run, whether or not anything happened.
-- **2:** a bad config, state file or environment, reported on stderr before anything runs.
+- **2:** a bad command line, config or state file, or no `SLACK_TOKEN`, reported on stderr before the run. Or a state file that couldn't be saved after it, so the next run repeats this one's events.
 - **Anything else:** botwatch itself crashed. The state file is left as it was, so the next run repeats rather than skips.
 
 **Output.** stdout carries only JSON lines, one event each. See
