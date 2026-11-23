@@ -2,14 +2,15 @@ import asyncio
 import botwatch
 import contextlib
 import pytest
+from collections.abc import Sequence
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
 from typing import Literal
 
-_QUIET = timedelta(seconds=0.3)
+_QUIET = timedelta(seconds=0.5)
 
-_LINGER = timedelta(seconds=0.1)
+_LINGER = timedelta(seconds=0.2)
 
 
 class _Ping(botwatch.Event):
@@ -18,9 +19,11 @@ class _Ping(botwatch.Event):
 
 type _Update = botwatch.Update[int, _Ping]
 
+type _Outcome = _Update | BaseException | Literal['cancelled']
+"""What a pull produced: an update, an exception, or a cancellation."""
 
-def _update(state: int, *event_ids: str) -> _Update:
-    """An update whose state counts the events so far."""
+
+def _create_update(state: int, *event_ids: str) -> _Update:
     return botwatch.Update(
         events=tuple(
             _Ping(id=event_id, time=datetime.now(timezone.utc))
@@ -31,16 +34,17 @@ def _update(state: int, *event_ids: str) -> _Update:
 
 
 async def _play(
-    script: list[tuple[float, _Update | Exception]],
+    script: Sequence[tuple[float, _Update | BaseException]],
     closed: list[str],
     name: str,
 ) -> botwatch.Source[int, _Ping]:
     """A source that yields (or raises) each scripted item after its delay, in
-    seconds, then waits forever like a real one."""
+    seconds, then waits forever like a real one, and records when it's
+    closed."""
     try:
         for delay, item in script:
             await asyncio.sleep(delay)
-            if isinstance(item, Exception):
+            if isinstance(item, BaseException):
                 raise item
             yield item
         await asyncio.Event().wait()
@@ -48,73 +52,166 @@ async def _play(
         closed.append(name)
 
 
+def _read_outcome(task: asyncio.Task[_Update]) -> _Outcome:
+    exception = None if task.cancelled() else task.exception()
+    return (
+        'cancelled'
+        if task.cancelled()
+        else task.result() if exception is None else exception
+    )
+
+
 async def _run(
     sources: dict[str, botwatch.Source[int, _Ping]],
-) -> tuple[list[tuple[str, _Update | BaseException]], float]:
+    linger: timedelta = _LINGER,
+) -> tuple[list[tuple[str, _Outcome]], float]:
     """Runs :func:`botwatch.select` to departure, returning what it yielded and
     how long it took."""
     loop = asyncio.get_running_loop()
     started = loop.time()
-    received: list[tuple[str, _Update | BaseException]] = []
-    updates = botwatch.select(sources, quiet_timeout=_QUIET, linger=_LINGER)
+    received: list[tuple[str, _Outcome]] = []
+    updates = botwatch.select(sources, quiet_timeout=_QUIET, linger=linger)
     async with contextlib.aclosing(updates):
         async for key, task in updates:
-            exception = task.exception()
-            received.append((key, task.result() if exception is None else exception))
+            received.append((key, _read_outcome(task)))
     return received, loop.time() - started
 
 
-async def test_select__waits_out_the_quiet_timeout() -> None:
-    closed: list[str] = []
-
-    received, elapsed = await _run({'a': _play([(0, _update(0))], closed, 'a')})
-
-    assert received == [('a', _update(0))]
-    assert elapsed >= _QUIET.total_seconds()
-    assert closed == ['a']
-
-
-async def test_select__departs_a_linger_after_the_first_event() -> None:
-    closed: list[str] = []
-    early = _play([(0, _update(0)), (0.05, _update(1, 'a1'))], closed, 'a')
-    within = _play([(0, _update(0)), (0.1, _update(1, 'b1'))], closed, 'b')
-    late = _play([(0, _update(0)), (0.25, _update(1, 'c1'))], closed, 'c')
-
-    received, elapsed = await _run({'a': early, 'b': within, 'c': late})
-
-    assert [key for key, item in received if item != _update(0)] == ['a', 'b']
-    assert elapsed < _QUIET.total_seconds()
-    assert sorted(closed) == ['a', 'b', 'c']
+def _create_waiting_sources(
+    closed: list[str],
+) -> dict[str, botwatch.Source[int, _Ping]]:
+    """Two sources: one with an event at once, one that never has any."""
+    return {
+        'a': _play([(0, _create_update(1, 'a1'))], closed, 'a'),
+        'b': _play([(0, _create_update(0))], closed, 'b'),
+    }
 
 
-async def test_select__failures_never_open_the_window() -> None:
-    closed: list[str] = []
-    failing = _play([(0, ValueError('boom'))], closed, 'a')
+class Test_select:
+    async def test__waits_out_the_quiet_timeout(self) -> None:
+        closed: list[str] = []
 
-    received, elapsed = await _run({'a': failing})
+        received, elapsed = await _run(
+            {'a': _play([(0, _create_update(0))], closed, 'a')},
+        )
 
-    assert [(key, repr(item)) for key, item in received] == [
-        ('a', "ValueError('boom')"),
-    ]
-    assert elapsed >= _QUIET.total_seconds()
+        assert received == [('a', _create_update(0))]
+        assert elapsed >= _QUIET.total_seconds()
+        assert closed == ['a']
 
+    async def test__departs_a_linger_after_the_first_event(self) -> None:
+        closed: list[str] = []
+        sources = {
+            'a': _play([(0.05, _create_update(1, 'a1'))], closed, 'a'),
+            'b': _play([(0.1, _create_update(1, 'b1'))], closed, 'b'),
+            'c': _play([(0.4, _create_update(1, 'c1'))], closed, 'c'),
+        }
 
-async def test_select__checkpoints_never_open_the_window() -> None:
-    closed: list[str] = []
-    checkpoints = _play([(0, _update(0)), (0.05, _update(0))], closed, 'a')
+        received, elapsed = await _run(sources)
 
-    _received, elapsed = await _run({'a': checkpoints})
+        assert [key for key, _ in received] == ['a', 'b']
+        assert elapsed < _QUIET.total_seconds()
+        assert sorted(closed) == ['a', 'b', 'c']
 
-    assert elapsed >= _QUIET.total_seconds()
+    async def test__departs_at_once_without_a_linger(self) -> None:
+        closed: list[str] = []
 
+        received, elapsed = await _run(
+            _create_waiting_sources(closed),
+            linger=timedelta(0),
+        )
 
-@pytest.mark.parametrize('with_event', [False, True])
-async def test_select__when_every_source_ends(with_event: bool) -> None:
-    """Ended sources pace the run unless an event already opened the window."""
+        assert received[0][0] == 'a'
+        assert elapsed < _QUIET.total_seconds()
+        assert sorted(closed) == ['a', 'b']
 
-    async def end(event_ids: tuple[str, ...]) -> botwatch.Source[int, _Ping]:
-        yield _update(len(event_ids), *event_ids)
+    async def test__failures_never_open_the_window(self) -> None:
+        closed: list[str] = []
+        sources = {
+            'a': _play([(0, ValueError('boom'))], closed, 'a'),
+            'b': _play([(0, asyncio.CancelledError())], closed, 'b'),
+        }
 
-    _received, elapsed = await _run({'a': end(('a1',) if with_event else ())})
+        received, elapsed = await _run(sources)
 
-    assert (elapsed >= _QUIET.total_seconds()) is not with_event
+        assert sorted((key, repr(outcome)) for key, outcome in received) == [
+            ('a', "ValueError('boom')"),
+            ('b', "'cancelled'"),
+        ]
+        assert elapsed >= _QUIET.total_seconds()
+        assert sorted(closed) == ['a', 'b']
+
+    async def test__checkpoints_never_open_the_window(self) -> None:
+        closed: list[str] = []
+        checkpoints = [(0, _create_update(0)), (0.05, _create_update(0))]
+
+        _received, elapsed = await _run({'a': _play(checkpoints, closed, 'a')})
+
+        assert elapsed >= _QUIET.total_seconds()
+        assert closed == ['a']
+
+    @pytest.mark.parametrize('with_event', [False, True])
+    async def test__when_every_source_ends(self, with_event: bool) -> None:
+        """Ended sources pace the run unless an event already opened the
+        window."""
+
+        async def end(event_ids: tuple[str, ...]) -> botwatch.Source[int, _Ping]:
+            yield _create_update(len(event_ids), *event_ids)
+
+        _received, elapsed = await _run({'a': end(('a1',) if with_event else ())})
+
+        assert (elapsed >= _QUIET.total_seconds()) is not with_event
+
+    async def test__closes_every_source_when_the_consumer_stops_early(
+        self,
+    ) -> None:
+        closed: list[str] = []
+        updates = botwatch.select(
+            _create_waiting_sources(closed),
+            quiet_timeout=_QUIET,
+            linger=_LINGER,
+        )
+
+        async with contextlib.aclosing(updates):
+            async for _ in updates:
+                break
+
+        assert sorted(closed) == ['a', 'b']
+
+    async def test__closes_every_source_when_the_consumer_raises(self) -> None:
+        closed: list[str] = []
+        updates = botwatch.select(
+            _create_waiting_sources(closed),
+            quiet_timeout=_QUIET,
+            linger=_LINGER,
+        )
+
+        with pytest.raises(ValueError):
+            async with contextlib.aclosing(updates):
+                async for _ in updates:
+                    raise ValueError('consumer failed')
+
+        assert sorted(closed) == ['a', 'b']
+
+    async def test__closes_every_source_when_the_consumer_is_cancelled(
+        self,
+    ) -> None:
+        closed: list[str] = []
+        sources = {
+            'a': _play([], closed, 'a'),
+            'b': _play([], closed, 'b'),
+        }
+
+        async def consume() -> None:
+            updates = botwatch.select(sources, quiet_timeout=_QUIET, linger=_LINGER)
+            async with contextlib.aclosing(updates):
+                async for _ in updates:
+                    pass
+
+        consumer = asyncio.create_task(consume())
+        await asyncio.sleep(0.05)
+        consumer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await consumer
+
+        assert sorted(closed) == ['a', 'b']

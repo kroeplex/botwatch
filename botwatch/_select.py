@@ -27,22 +27,26 @@ async def _linger[ItemT](
     loop = asyncio.get_running_loop()
     deadline = loop.time() + quiet_timeout.total_seconds()
     is_open = False
+    departed = False
 
     async with contextlib.aclosing(items):
-        try:
-            while True:
-                # Cancelling the pull on timeout is what closes the sources:
-                # the cancellation reaches each one where it waits.
-                item = await asyncio.wait_for(anext(items), deadline - loop.time())
+        while not departed:
+            try:
+                # On timeout the pull is cancelled where it waits, in this task,
+                # and the cancellation tears ``items`` down.
+                async with asyncio.timeout_at(deadline):
+                    item = await anext(items)
+            except TimeoutError:
+                departed = True
+            except StopAsyncIteration:
+                departed = True
+                if not is_open:
+                    await asyncio.sleep(max(0.0, deadline - loop.time()))
+            else:
                 if not is_open and opens(item):
                     is_open = True
                     deadline = loop.time() + linger.total_seconds()
                 yield item
-        except TimeoutError:
-            pass  # departure
-        except StopAsyncIteration:
-            if not is_open:
-                await asyncio.sleep(max(0.0, deadline - loop.time()))
 
 
 def _has_events[KeyT, StateT, EventT: _source.Event](
@@ -51,7 +55,9 @@ def _has_events[KeyT, StateT, EventT: _source.Event](
     """Whether an item from :func:`turbopipes.aselect` is an update with
     events, as opposed to a checkpoint or a failure."""
     _key, task = item
-    return task.exception() is None and bool(task.result().events)
+    return (
+        not task.cancelled() and task.exception() is None and bool(task.result().events)
+    )
 
 
 def select[KeyT, StateT, EventT: _source.Event](
@@ -64,7 +70,9 @@ def select[KeyT, StateT, EventT: _source.Event](
     it arrives, as a ``(key, task)`` pair.
 
     The pairs are :func:`turbopipes.aselect`'s: the task has completed, and
-    awaiting it gives the update, or raises what the source raised.
+    awaiting it gives the update, or raises what the source raised. A source
+    that raised :class:`asyncio.CancelledError` of its own yields a cancelled
+    task.
 
     Waits up to ``quiet_timeout`` for an update with events, then exactly
     ``linger`` more, counted from that update, and then closes every source.
@@ -74,8 +82,13 @@ def select[KeyT, StateT, EventT: _source.Event](
     Example::
 
         sources = {
-            'top': slack.watch(client, 'C0123456789', None),
-            'thread': slack.watch(client, 'C0123456789', None, thread_ts='…'),
+            'top': slack.watch(client, 'C0123456789', state=None),
+            'thread': slack.watch(
+                client,
+                'C0123456789',
+                state=None,
+                thread_ts='1785600000.000200',
+            ),
         }
         updates = botwatch.select(
             sources,
