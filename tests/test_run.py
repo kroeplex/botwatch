@@ -295,17 +295,35 @@ async def test_run_once__where_a_run_ends_never_changes_what_is_emitted(
         assert len(records) > len(first_seen)  # the crashed runs did replay
 
 
-async def test_run_once__skips_excluded_messages_but_moves_past_them() -> None:
+_EXCLUDING_ME = (slack.ExcludeRule(user='U0ME'),)
+
+
+@pytest.mark.parametrize(
+    'config',
+    [
+        _config.Config(
+            quiet_timeout=timedelta(seconds=0.2),
+            linger=timedelta(0),
+            sources=(_TOP.model_copy(update={'exclude': _EXCLUDING_ME}),),
+        ),
+        _config.Config(
+            quiet_timeout=timedelta(seconds=0.2),
+            linger=timedelta(0),
+            defaults=_config.Defaults(
+                slack=_config.TypeDefaults[slack.ExcludeRule](exclude=_EXCLUDING_ME),
+            ),
+            sources=(_TOP,),
+        ),
+    ],
+    ids=['source', 'defaults'],
+)
+async def test_run_once__skips_excluded_messages_but_moves_past_them(
+    config: _config.Config,
+) -> None:
     fake = _fake_slack.FakeSlack()
     fake.post(_create_ts(1), user='U0ME', text='mine')
     fake.post(_create_ts(2), user='U0YOU', text='yours')
     fake.post(_create_ts(3), user='U0ME', text='mine again')
-    excluding = _TOP.model_copy(update={'exclude': (slack.ExcludeRule(user='U0ME'),)})
-    config = _config.Config(
-        quiet_timeout=timedelta(seconds=0.2),
-        linger=timedelta(0),
-        sources=(excluding,),
-    )
     previous = _state.StateFile(sources={_TOP.key: slack.SlackState(after=_PARENT)})
     out = io.StringIO()
 

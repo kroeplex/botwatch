@@ -2,6 +2,7 @@ import pydantic
 import pytest
 import re
 from botwatch import _config
+from botwatch import github
 from botwatch import slack
 from datetime import timedelta
 from pathlib import Path
@@ -183,3 +184,54 @@ def test_Config__save__reads_back_unchanged(name: str, tmp_path: Path) -> None:
 
     assert _config.Config.load(path) == config
     assert path.read_text().startswith('{' if name.endswith('.json') else 'quiet')
+
+
+_DEFAULTS = _config.Defaults(
+    slack=_config.TypeDefaults[slack.ExcludeRule](
+        poll_interval=timedelta(seconds=15),
+        exclude=(slack.ExcludeRule(user='U0BOT'),),
+    ),
+)
+
+
+def test_Config__resolve__applies_the_defaults() -> None:
+    config = _config.Config(defaults=_DEFAULTS, sources=(_slack('C1'),))
+
+    resolved = config.resolve(config.sources[0])
+
+    assert resolved.key == 'slack:C1'
+    assert resolved.poll_interval == timedelta(seconds=15)
+    assert resolved.exclude == (slack.ExcludeRule(user='U0BOT'),)
+
+
+def test_Config__resolve__keeps_the_sources_own_settings() -> None:
+    source = _slack('C1', poll_interval='30s', exclude=[{'text': '^me'}])
+    config = _config.Config(defaults=_DEFAULTS, sources=(source,))
+
+    resolved = config.resolve(source)
+
+    assert resolved.poll_interval == timedelta(seconds=30)
+    assert resolved.exclude == (
+        slack.ExcludeRule(user='U0BOT'),
+        slack.ExcludeRule(text=re.compile('^me')),
+    )
+
+
+def test_Config__resolve__without_defaults() -> None:
+    source = _config.GitHubSourceConfig(type='github', repo='o/r', pull=1)
+
+    assert _config.Config(defaults=_DEFAULTS).resolve(source) == source
+
+
+def test_Config__to_text__writes_just_the_defaults_given() -> None:
+    config = _config.Config(
+        defaults=_config.Defaults(
+            github=_config.TypeDefaults[github.ExcludeRule](
+                exclude=(github.ExcludeRule(user='octo-bot'),),
+            ),
+        ),
+    )
+
+    assert config.to_text() == (
+        'defaults:\n  github:\n    exclude:\n    - user: octo-bot\n'
+    )

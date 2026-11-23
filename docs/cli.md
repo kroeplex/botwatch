@@ -3,6 +3,7 @@
 ```console
 $ botwatch [run] --config CONFIG [--state STATE]
 $ botwatch add --config CONFIG slack CONVERSATION [--thread TS] [--poll-interval DURATION] [--exclude RULE]…
+$ botwatch defaults --config CONFIG TYPE [--poll-interval DURATION] [--exclude RULE]…
 $ botwatch remove --config CONFIG KEY…
 $ botwatch show --config CONFIG [--state STATE] [--json]
 ```
@@ -74,6 +75,19 @@ and the rest are kept; `--exclude` replaces the whole list. To reset a source,
 `remove` it and `add` it again. Its key is unchanged either way, so it keeps its
 place in the state file. The config is created if it doesn't exist.
 
+## `defaults`
+
+```console
+$ botwatch defaults --config CONFIG slack --exclude '{user: U0123BOT}'
+updated defaults for slack
+```
+
+Sets the defaults for every source of a type, `slack` or `github`, and prints
+`updated` or `unchanged`. A default poll interval applies to each source that
+doesn't set its own, and default exclude rules apply ahead of each source's
+own. As with `add`, the options given replace those settings and the rest are
+kept, and the config is created if it doesn't exist.
+
 ## `remove`
 
 ```console
@@ -85,8 +99,8 @@ Stops watching the sources with these keys, as `add` and `show` print them.
 Prints `removed` and each key removed; a key that isn't watched is reported on
 stderr and isn't an error. The next run drops their entries from the state file.
 
-`add` and `remove` rewrite the config atomically, keeping just the settings it
-gives, so comments and formatting in it are lost. A `.json` config stays JSON.
+`add`, `defaults` and `remove` rewrite the config atomically, keeping just the
+settings it gives, so comments and formatting in it are lost. A `.json` config stays JSON.
 They hold a lock on its directory, so edits made at the same time all land.
 
 ## `show`
@@ -101,7 +115,8 @@ In state.yaml but no longer configured, dropped on the next run:
 ```
 
 Validates the config, and the state file if given, and lists each source with
-its poll interval and, given the state, how far it has got. It also lists state
+its poll interval and, given the state, how far it has got. Each source's
+settings are shown as it runs, with its type's defaults applied. It also lists state
 entries for sources no longer configured. A state file that doesn't exist yet
 is noted on stderr.
 
