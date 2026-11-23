@@ -1,5 +1,6 @@
 """One run: select over the configured sources and write their events."""
 
+import asyncio
 import contextlib
 import logging
 import pydantic
@@ -49,6 +50,12 @@ def _write_record(out: TextIO, record: Record) -> None:
     out.flush()
 
 
+def _get_error[ResultT](task: asyncio.Task[ResultT]) -> BaseException | None:
+    """What a source's pull raised, if anything, a cancellation of its own
+    included."""
+    return asyncio.CancelledError() if task.cancelled() else task.exception()
+
+
 def _create_failure(error: BaseException) -> SourceFailed:
     return SourceFailed(
         id=uuid.uuid4().hex,
@@ -75,7 +82,7 @@ async def run_once(
     )
     async with contextlib.aclosing(updates):
         async for key, task in updates:
-            error = task.exception()
+            error = _get_error(task)
             if error is None:
                 for event in task.result().events:
                     _write_record(out, Record(source=key, event=event))

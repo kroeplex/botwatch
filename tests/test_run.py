@@ -1,3 +1,5 @@
+# pylint: disable=protected-access
+
 import asyncio
 import io
 import json
@@ -53,3 +55,25 @@ async def test_run_once() -> None:
         'text': 'during the run',
     }
     assert records[1]['event']['time'] == '2026-08-01T16:00:02.000Z'
+
+
+async def test_get_error() -> None:
+    async def succeed() -> int:
+        return 1
+
+    async def fail() -> int:
+        raise ValueError('boom')
+
+    async def cancel_itself() -> int:
+        raise asyncio.CancelledError()
+
+    tasks = [
+        asyncio.create_task(coroutine()) for coroutine in [succeed, fail, cancel_itself]
+    ]
+    await asyncio.wait(tasks)
+
+    errors = [_run._get_error(task) for task in tasks]
+
+    assert errors[0] is None
+    assert repr(errors[1]) == "ValueError('boom')"
+    assert isinstance(errors[2], asyncio.CancelledError)

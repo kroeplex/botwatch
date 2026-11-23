@@ -67,7 +67,7 @@ class SlackSourceConfig(pydantic.BaseModel):
         return slack.watch(
             client,
             self.conversation,
-            state,
+            state=state,
             thread_ts=self.thread_ts,
             poll_interval=self.poll_interval,
         )
