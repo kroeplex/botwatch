@@ -638,3 +638,38 @@ class Test_watch:
             for event in update.events
             if isinstance(event, github.ChecksConcluded)
         ] == ['success']
+
+    async def test__reports_success_once_through_a_rerun(self) -> None:
+        fake = _fake_github.FakeGitHub()
+        fake.check('test')
+        fake.suite('in_progress', 1)  # a workflow running again on the head
+        clock_reads = 0
+
+        def finish_on_the_second_poll(request: httpx.Request) -> None:
+            nonlocal clock_reads
+            if request.url.path == '/rate_limit':
+                clock_reads += 1
+                if clock_reads == 2:
+                    fake.suite('completed', 1)
+                elif clock_reads == 3:
+                    fake.comment(3)
+
+        fake.after_each = finish_on_the_second_poll
+        async with fake.create_client() as client:
+            source = github.watch(
+                client,
+                _REPO,
+                _PULL,
+                state=github.GitHubState(
+                    after=at(2),
+                    head=_HEAD,
+                    checks=github.CheckResult(head=_HEAD, conclusion='success'),
+                    checks_reports=1,
+                ),
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                update = await anext(source)
+
+        assert [event.type for event in update.events] == ['github.comment_posted']

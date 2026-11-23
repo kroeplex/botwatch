@@ -164,7 +164,7 @@ conversation doesn't include thread replies.
     draft and ready for review, from the pull request's issue events. The
     `closed` that comes with a merge is left out.
   - `github.checks_concluded` when the head's checks reach a conclusion other
-    than the last one reported for that head: `failure` as soon as a check run
+    than the last one reported or recorded for that head: `failure` as soon as a check run
     or commit status fails, and otherwise, once all have finished,
     `cancelled` or `success`. Only each check's newest run counts, as a
     workflow can run again for the same commit. A check suite not yet

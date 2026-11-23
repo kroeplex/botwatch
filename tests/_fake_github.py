@@ -195,16 +195,10 @@ class FakeGitHub:
             ),
         )
 
-    def check(
-        self,
-        name: str,
-        conclusion: str | None = 'success',
-        *,
-        sha: str | None = None,
-    ) -> None:
-        """Sets a check on ``sha``, the head by default: completed with
-        ``conclusion``, or still running when it's ``None``."""
-        runs = self.check_runs.setdefault(sha or self.head, [])
+    def check(self, name: str, conclusion: str | None = 'success') -> None:
+        """Sets a check on the head: completed with ``conclusion``, or still
+        running when it's ``None``."""
+        runs = self.check_runs.setdefault(self.head, [])
         runs[:] = [run for run in runs if run.name != name]
         runs.append(
             _api.CheckRun(

@@ -236,7 +236,7 @@ class StateChanged(_source.Event):
 
 class ChecksConcluded(_source.Event):
     """The head commit's checks reached a conclusion other than the last one
-    seen for that head: one failed, or all finished. A re-run that turns a
+    reported or recorded for that head: one failed, or all finished. A re-run that turns a
     failure into a success is reported too."""
 
     type: Literal['github.checks_concluded'] = 'github.checks_concluded'
@@ -652,7 +652,9 @@ async def watch(
             events,
             settled_before=started_at - _SETTLE_TIME,
             head=head,
-            checks=checks,
+            # Without a verdict, keep the last result: a workflow re-running on
+            # a head whose checks concluded mustn't make them conclude again.
+            checks=checks if verdict is not None else None,
             found=[
                 event for event in (head_changed, checks_concluded) if event is not None
             ],
