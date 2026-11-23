@@ -32,7 +32,13 @@ class SourceFailed(_source.Event):
     """What the source raised."""
 
 
-type SourceEvent = slack.MessagePosted | github.CommentPosted | github.ReviewSubmitted
+type SourceEvent = (
+    slack.MessagePosted
+    | github.CommentPosted
+    | github.ReviewSubmitted
+    | github.HeadChanged
+    | github.StateChanged
+)
 """Every event a source can emit."""
 
 type OutputEvent = Annotated[

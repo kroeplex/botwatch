@@ -49,3 +49,31 @@ def test_ExcludeRule__matches(
     matches: bool,
 ) -> None:
     assert rule.matches(review) is matches
+
+
+_PUSH = github.HeadChanged(
+    id='head-a-b',
+    time=_fake_github.at(1),
+    repo=_fake_github.REPO,
+    pull=_fake_github.PULL,
+    user='Octo-Bot',
+    before='a',
+    after='b',
+    message='[bot] Fix it',
+    url='https://github.com/',
+)
+
+
+@pytest.mark.parametrize(
+    ('rule', 'matches'),
+    [
+        (github.ExcludeRule(user='octo-bot'), True),
+        (github.ExcludeRule(text=re.compile(r'^\[bot\]')), True),
+        (github.ExcludeRule(user='octo-bot', text=re.compile('^human')), False),
+    ],
+)
+def test_ExcludeRule__matches_a_push_by_committer_and_message(
+    rule: github.ExcludeRule,
+    matches: bool,
+) -> None:
+    assert rule.matches(_PUSH) is matches

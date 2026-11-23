@@ -66,6 +66,14 @@ class GitHubState(pydantic.BaseModel):
     """The events at or after ``after`` already reported: each one's ID, and
     its time."""
 
+    head: str | None = None
+    """The pull request's head commit when last polled. ``None`` until the
+    source records it as it starts, which reports no head change."""
+
+    head_changes: int = 0
+    """How many head changes the source has reported, which numbers each one
+    so that no ID repeats, even when the head returns to an earlier commit."""
+
     def describe(self) -> str:
         """Where the source is up to, for people."""
         return f'after {self.after:%Y-%m-%d %H:%M:%S} UTC'
@@ -135,7 +143,75 @@ class ReviewSubmitted(_source.Event):
     """Its comments on the diff, oldest first."""
 
 
-type GitHubEvent = CommentPosted | ReviewSubmitted
+class HeadChanged(_source.Event):
+    """The pull request's head moved to another commit: commits were pushed,
+    or force-pushed."""
+
+    type: Literal['github.head_changed'] = 'github.head_changed'
+
+    repo: Repo
+
+    pull: int
+
+    user: str | None
+    """The login of the new head commit's committer: whoever made it, or
+    rebased or amended it, and usually whoever pushed it. ``web-flow`` for a
+    commit GitHub made; ``None`` when GitHub can't match the commit to an
+    account."""
+
+    before: str
+    """The head commit's SHA before."""
+
+    after: str
+    """The head commit's SHA now."""
+
+    message: str
+    """The new head commit's message."""
+
+    url: str
+    """The changes between the two on github.com."""
+
+
+type StateName = Literal[
+    'merged',
+    'closed',
+    'reopened',
+    'ready_for_review',
+    'converted_to_draft',
+]
+
+_STATE_NAMES: dict[str, StateName] = {
+    'merged': 'merged',
+    'closed': 'closed',
+    'reopened': 'reopened',
+    'ready_for_review': 'ready_for_review',
+    'convert_to_draft': 'converted_to_draft',
+}
+"""The issue events that change a pull request's state, and what each is
+reported as."""
+
+
+class StateChanged(_source.Event):
+    """The pull request was merged, closed, reopened, marked ready for review,
+    or converted to a draft. A merge also closes it, and that ``closed`` is
+    left out."""
+
+    type: Literal['github.state_changed'] = 'github.state_changed'
+
+    repo: Repo
+
+    pull: int
+
+    user: str | None
+    """Who did it. ``None`` for a deleted account."""
+
+    state: StateName
+
+    url: str
+    """The pull request on github.com."""
+
+
+type GitHubEvent = CommentPosted | ReviewSubmitted | HeadChanged | StateChanged
 
 
 def _apply_poll(
@@ -143,13 +219,15 @@ def _apply_poll(
     events: Sequence[GitHubEvent],
     *,
     settled_before: datetime,
+    head: str,
+    head_changed: HeadChanged | None = None,
 ) -> _source.Update[GitHubState, GitHubEvent]:
-    """Folds one poll's events into the state: those not yet reported, oldest
-    first, and the state after them.
+    """Folds one poll's events into the state: those not yet reported, and any
+    change of head, oldest first, and the state after them.
 
     The state moves on to the newest event reported, but no further than
     ``settled_before``, before which every event is visible. It remembers
-    every event reported from there on.
+    every event reported from there on, and ``head``.
     """
     new_events = sorted(
         (
@@ -166,10 +244,17 @@ def _apply_poll(
     )
     reported = {**state.seen, **{event.id: event.time for event in new_events}}
     return _source.Update(
-        events=tuple(new_events),
+        events=tuple(
+            sorted(
+                [*new_events, *([head_changed] if head_changed is not None else [])],
+                key=lambda event: (event.time, event.id),
+            ),
+        ),
         state=GitHubState(
             after=after,
             seen={id_: time for id_, time in reported.items() if time >= after},
+            head=head,
+            head_changes=state.head_changes + (head_changed is not None),
         ),
     )
 
@@ -224,14 +309,67 @@ def _review_to_event(
     )
 
 
+def _to_state_changes(
+    issue_events: Sequence[_api.IssueEvent],
+    repo: str,
+    pull: int,
+    url: str,
+) -> list[StateChanged]:
+    """The issue events that change the pull request's state, without the
+    ``closed`` that comes with a merge."""
+    merged_at = {event.created_at for event in issue_events if event.event == 'merged'}
+    return [
+        StateChanged(
+            id=f'event-{event.id}',
+            time=event.created_at,
+            repo=repo,
+            pull=pull,
+            user=event.actor.login if event.actor is not None else None,
+            state=_STATE_NAMES[event.event],
+            url=url,
+        )
+        for event in issue_events
+        if event.event in _STATE_NAMES
+        and not (event.event == 'closed' and event.created_at in merged_at)
+    ]
+
+
+async def _fetch_head_change(
+    client: _api.GitHubClient,
+    repo: str,
+    pull: int,
+    *,
+    number: int,
+    before: str,
+    after: str,
+    time: datetime,
+) -> HeadChanged:
+    """The ``number``\\ th head change. A push has no time of its own, so it
+    takes ``time``, when the poll saw it."""
+    commit = await client.fetch_commit(repo, after)
+    return HeadChanged(
+        id=f'head-{number}-{after}',
+        time=time,
+        repo=repo,
+        pull=pull,
+        user=commit.committer.login if commit.committer is not None else None,
+        before=before,
+        after=after,
+        message=commit.message,
+        url=f'https://github.com/{repo}/compare/{before}...{after}',
+    )
+
+
 async def _fetch_events(
     client: _api.GitHubClient,
     repo: str,
     pull: int,
     state: GitHubState,
+    url: str,
 ) -> list[GitHubEvent]:
-    """The comments and submitted reviews at or after ``state.after``. The
-    diff comments are listed only when a review there is new.
+    """The comments, submitted reviews and state changes at or after
+    ``state.after``. The diff comments are listed only when a review there is
+    new.
 
     A review is placed by when it was submitted, not by its ID, which it gets
     while still pending.
@@ -249,8 +387,15 @@ async def _fetch_events(
             review_comments.setdefault(comment.pull_request_review_id, []).append(
                 comment,
             )
+    state_changes = _to_state_changes(
+        await client.fetch_issue_events(repo, pull),
+        repo,
+        pull,
+        url,
+    )
     return [
         *(_comment_to_event(comment, repo, pull) for comment in comments),
+        *state_changes,
         *(
             _review_to_event(
                 review,
@@ -272,24 +417,46 @@ async def watch(
     state: GitHubState | None,
     poll_interval: timedelta = DEFAULT_POLL_INTERVAL,
 ) -> _source.Source[GitHubState, GitHubEvent]:
-    """Watches a pull request's conversation comments and reviews, forever.
+    """Watches a pull request's comments, reviews, head and state, forever.
 
     Starts from ``state``, or when it's ``None`` from now by GitHub's clock,
-    and first yields that starting state as a checkpoint. Then it polls every
+    taking the pull request's current head when the state has none, and first
+    yields that starting state as a checkpoint. Then it polls every
     ``poll_interval`` and yields an update for each poll that finds new events.
     """
     current = (
         state if state is not None else GitHubState(after=await client.fetch_time())
     )
+    if current.head is None:
+        current = current.model_copy(
+            update={'head': await client.fetch_head(repo, pull)},
+        )
     yield _source.Update(events=(), state=current)
 
+    url = f'https://github.com/{repo}/pull/{pull}'
     while True:
         started_at = await client.fetch_time()
-        events = await _fetch_events(client, repo, pull, current)
+        head = await client.fetch_head(repo, pull)
+        events = await _fetch_events(client, repo, pull, current, url)
+        head_changed = (
+            await _fetch_head_change(
+                client,
+                repo,
+                pull,
+                number=current.head_changes + 1,
+                before=current.head,
+                after=head,
+                time=started_at,
+            )
+            if current.head is not None and current.head != head
+            else None
+        )
         update = _apply_poll(
             current,
             events,
             settled_before=started_at - _SETTLE_TIME,
+            head=head,
+            head_changed=head_changed,
         )
         if update.events:
             yield update

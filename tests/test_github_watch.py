@@ -5,6 +5,7 @@ import httpx
 from . import _fake_github
 from botwatch import github
 from botwatch.github import _watch
+from collections.abc import Sequence
 from datetime import datetime
 from datetime import timedelta
 
@@ -14,7 +15,19 @@ _PULL = _fake_github.PULL
 
 _NO_WAIT = timedelta(0)
 
+_HEAD = _fake_github.HEAD
+
+_NEW_HEAD = 'b' * 40
+
 at = _fake_github.at
+
+
+def _bodies(events: Sequence[github.GitHubEvent]) -> list[str]:
+    return [
+        event.body
+        for event in events
+        if isinstance(event, github.CommentPosted | github.ReviewSubmitted)
+    ]
 
 
 def _comment(event_id: str, time: datetime) -> github.CommentPosted:
@@ -38,10 +51,16 @@ class Test_apply_poll:
             _comment('comment-2', at(1)),
         ]
 
-        update = _watch._apply_poll(state, events, settled_before=at(10))
+        update = _watch._apply_poll(
+            state,
+            events,
+            settled_before=at(10),
+            head=_HEAD,
+        )
 
         assert [event.id for event in update.events] == ['comment-2', 'comment-3']
         assert update.state == github.GitHubState(
+            head=_HEAD,
             after=at(3),
             seen={'comment-3': at(3)},
         )
@@ -50,10 +69,16 @@ class Test_apply_poll:
         state = github.GitHubState(after=at(1))
         events = [_comment('comment-1', at(1)), _comment('comment-3', at(3))]
 
-        update = _watch._apply_poll(state, events, settled_before=at(2))
+        update = _watch._apply_poll(
+            state,
+            events,
+            settled_before=at(2),
+            head=_HEAD,
+        )
 
         assert [event.id for event in update.events] == ['comment-1', 'comment-3']
         assert update.state == github.GitHubState(
+            head=_HEAD,
             after=at(2),
             seen={'comment-3': at(3)},
         )
@@ -65,15 +90,22 @@ class Test_apply_poll:
         )
         listed = [_comment('comment-2', at(15)), _comment('comment-3', at(20))]
 
-        first = _watch._apply_poll(state, listed, settled_before=at(14))
+        first = _watch._apply_poll(
+            state,
+            listed,
+            settled_before=at(14),
+            head=_HEAD,
+        )
         second = _watch._apply_poll(
             first.state,
             [_comment('comment-1', at(16)), *listed],
             settled_before=at(14),
+            head=_HEAD,
         )
 
         assert [event.id for event in first.events] == ['comment-3']
         assert first.state == github.GitHubState(
+            head=_HEAD,
             after=at(14),
             seen={'comment-1': at(16), 'comment-2': at(15), 'comment-3': at(20)},
         )
@@ -86,10 +118,11 @@ class Test_apply_poll:
             state,
             [_comment('comment-1', at(1))],
             settled_before=at(10),
+            head=_HEAD,
         )
 
         assert not update.events
-        assert update.state == state
+        assert update.state == state.model_copy(update={'head': _HEAD})
 
 
 async def _poll_once(
@@ -122,7 +155,7 @@ class Test_watch:
                 checkpoint = await anext(source)
 
         assert not checkpoint.events
-        assert checkpoint.state == github.GitHubState(after=at(5))
+        assert checkpoint.state == github.GitHubState(after=at(5), head=_HEAD)
 
     async def test__reports_comments_and_reviews(self) -> None:
         fake = _fake_github.FakeGitHub()
@@ -159,7 +192,7 @@ class Test_watch:
 
         events = await _poll_once(fake, state)
 
-        assert [event.body for event in events] == ['done']
+        assert _bodies(events) == ['done']
 
     async def test__reports_an_event_listed_late(self) -> None:
         fake = _fake_github.FakeGitHub(now=at(5))
@@ -184,10 +217,10 @@ class Test_watch:
                 first = await anext(source)
                 second = await anext(source)
 
-        assert [event.body for event in first.events] == [
+        assert _bodies(first.events) == [
             'before the reviews were listed',
         ]
-        assert [event.body for event in second.events] == [
+        assert _bodies(second.events) == [
             'after the comments were listed',
         ]
 
@@ -209,5 +242,118 @@ class Test_watch:
                 fake.comment(3, body='same second')
                 second = await anext(source)
 
-        assert [event.body for event in first.events] == ['first']
-        assert [event.body for event in second.events] == ['same second']
+        assert _bodies(first.events) == ['first']
+        assert _bodies(second.events) == ['same second']
+
+    async def test__reports_a_push(self) -> None:
+        fake = _fake_github.FakeGitHub(now=at(3))
+        fake.push(_NEW_HEAD, user='octocat', message='Fix the typo')
+
+        events = await _poll_once(fake, github.GitHubState(after=at(2), head=_HEAD))
+
+        assert events == [
+            github.HeadChanged(
+                id=f'head-1-{_NEW_HEAD}',
+                time=at(3),
+                repo=_REPO,
+                pull=_PULL,
+                user='octocat',
+                before=_HEAD,
+                after=_NEW_HEAD,
+                message='Fix the typo',
+                url=f'https://github.com/{_REPO}/compare/{_HEAD}...{_NEW_HEAD}',
+            ),
+        ]
+
+    async def test__numbers_pushes_that_return_to_a_head(self) -> None:
+        fake = _fake_github.FakeGitHub()
+        ids: list[str] = []
+
+        async with fake.create_client() as client:
+            source = github.watch(
+                client,
+                _REPO,
+                _PULL,
+                state=github.GitHubState(after=at(2), head=_HEAD),
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                for head in [_NEW_HEAD, _HEAD, _NEW_HEAD]:
+                    fake.push(head)
+                    ids.extend(event.id for event in (await anext(source)).events)
+
+        assert ids == [f'head-1-{_NEW_HEAD}', f'head-2-{_HEAD}', f'head-3-{_NEW_HEAD}']
+
+    async def test__an_idle_poll_costs_only_304s(self) -> None:
+        fake = _fake_github.FakeGitHub()
+        fake.review(3)
+        clock_reads = 0
+
+        def comment_on_the_third_poll(request: httpx.Request) -> None:
+            nonlocal clock_reads
+            if request.url.path == '/rate_limit':
+                clock_reads += 1
+                if clock_reads == 3:
+                    fake.comment(4)
+
+        fake.after_each = comment_on_the_third_poll
+        async with fake.create_client() as client:
+            source = github.watch(
+                client,
+                _REPO,
+                _PULL,
+                state=github.GitHubState(after=at(2), head=_HEAD),
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                await anext(source)  # the review, on the first poll
+                await anext(source)  # the comment, on the third
+
+        clock_indexes = [
+            index
+            for index, request in enumerate(fake.requests)
+            if request.url.path == '/rate_limit'
+        ]
+        assert fake.statuses[clock_indexes[1] + 1 : clock_indexes[2]] == [304] * 4
+
+    async def test__records_a_missing_head_as_it_starts(self) -> None:
+        fake = _fake_github.FakeGitHub()
+        fake.push(_NEW_HEAD)
+
+        async with fake.create_client() as client:
+            source = github.watch(
+                client,
+                _REPO,
+                _PULL,
+                state=github.GitHubState(after=at(2)),
+            )
+            async with contextlib.aclosing(source):
+                checkpoint = await anext(source)
+
+        assert checkpoint.state.head == _NEW_HEAD
+
+    async def test__reports_state_changes(self) -> None:
+        fake = _fake_github.FakeGitHub()
+        fake.act(3, 'labeled')
+        fake.act(4, 'merged')
+        fake.act(4, 'closed')  # comes with the merge
+        fake.act(5, 'reopened', user='octocat')
+        fake.act(6, 'convert_to_draft')
+        fake.act(7, 'ready_for_review')
+        fake.act(8, 'closed')
+
+        events = await _poll_once(fake, github.GitHubState(after=at(2), head=_HEAD))
+
+        assert [
+            (event.state, event.user)
+            for event in events
+            if isinstance(event, github.StateChanged)
+        ] == [
+            ('merged', 'maintainer'),
+            ('reopened', 'octocat'),
+            ('converted_to_draft', 'maintainer'),
+            ('ready_for_review', 'maintainer'),
+            ('closed', 'maintainer'),
+        ]

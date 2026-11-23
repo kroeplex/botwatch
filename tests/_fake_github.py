@@ -17,6 +17,9 @@ REPO = 'octo-org/octo-repo'
 
 PULL = 26
 
+HEAD = 'a' * 40
+"""The pull request's head commit until something is pushed."""
+
 _PREFIX = f'/repos/{REPO}'
 
 
@@ -29,9 +32,9 @@ def at(second: int) -> datetime:
 
 @dataclass
 class FakeGitHub:
-    """One pull request's conversation comments and reviews, answering the
-    calls botwatch makes the way GitHub does: oldest first, in pages of
-    ``per_page``, with ``ETag``\\ s that turn a repeated call into a 304,
+    """One pull request's comments, reviews, head and issue events, answering
+    the calls botwatch makes the way GitHub does: lists oldest first, in pages
+    of ``per_page``, with ``ETag``\\ s that turn a repeated call into a 304,
     which carries no ``Link`` header."""
 
     now: datetime = field(default_factory=lambda: at(0))
@@ -45,6 +48,14 @@ class FakeGitHub:
         default_factory=dict,
     )
     """Each review's comments, by the review's ID."""
+
+    head: str = HEAD
+    """The head commit's SHA."""
+
+    commits: dict[str, _api.Commit] = field(default_factory=dict)
+    """Each pushed commit, by SHA."""
+
+    issue_events: list[_api.IssueEvent] = field(default_factory=list)
 
     requests: list[httpx.Request] = field(default_factory=list)
 
@@ -126,6 +137,49 @@ class FakeGitHub:
     ) -> None:
         self.submit(self.start_review(user=user), second, state=state, body=body)
 
+    def push(
+        self,
+        sha: str,
+        *,
+        user: str | None = 'octocat',
+        message: str = 'Fix it',
+    ) -> None:
+        """Moves the head to ``sha``, committed by ``user``."""
+        self.head = sha
+        self.commits[sha] = _api.Commit.model_validate(
+            {
+                'commit': {'message': message},
+                'committer': {'login': user} if user is not None else None,
+            },
+        )
+
+    def act(self, second: int, event: str, *, user: str = 'maintainer') -> None:
+        """Records an issue event, such as ``merged`` or ``labeled``."""
+        self.issue_events.append(
+            _api.IssueEvent(
+                id=self._take_id(),
+                event=event,
+                actor=_api.User(login=user),
+                created_at=at(second),
+            ),
+        )
+
+    def _serve_head(self, request: httpx.Request) -> httpx.Response:
+        """The head's SHA, which is also its ``ETag``, as GitHub serves it."""
+        etag = f'"{self.head}"'
+        if request.headers.get('If-None-Match') == etag:
+            response = httpx.Response(304, headers={'ETag': etag})
+        else:
+            response = httpx.Response(200, text=self.head, headers={'ETag': etag})
+        return response
+
+    def _serve_commit(self, request: httpx.Request) -> httpx.Response:
+        commit = self.commits[request.url.params['sha']]
+        return httpx.Response(
+            200,
+            content=pydantic.TypeAdapter(list[_api.Commit]).dump_json([commit]),
+        )
+
     def _list(self, request: httpx.Request) -> list[pydantic.BaseModel] | None:
         path = request.url.path
         items: list[pydantic.BaseModel] | None
@@ -136,6 +190,8 @@ class FakeGitHub:
             ]
         elif path == f'{_PREFIX}/pulls/{PULL}/reviews':
             items = list(self.reviews)
+        elif path == f'{_PREFIX}/issues/{PULL}/events':
+            items = list(self.issue_events)
         elif path == f'{_PREFIX}/pulls/{PULL}/comments':
             submitted = {
                 review.id for review in self.reviews if review.submitted_at is not None
@@ -176,7 +232,11 @@ class FakeGitHub:
     def _handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         items = self._list(request)
-        if request.url.path == '/rate_limit':
+        if request.url.path == f'{_PREFIX}/commits/refs/pull/{PULL}/head':
+            response = self._serve_head(request)
+        elif request.url.path == f'{_PREFIX}/commits':
+            response = self._serve_commit(request)
+        elif request.url.path == '/rate_limit':
             response = httpx.Response(
                 200,
                 json={},
