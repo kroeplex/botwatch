@@ -1,72 +1,83 @@
+import asyncio
 import botwatch
 import contextlib
-import pydantic
-import pytest
-from botwatch import slack
-from botwatch.slack import _ts
-
-_MESSAGE = slack.MessagePosted(
-    id='1785600001.000000',
-    time=_ts.ts_to_datetime('1785600001.000000'),
-    conversation='C0123456789',
-    ts='1785600001.000000',
-    thread_ts=None,
-    user='U0BOT',
-    bot_id='B0BOT',
-    username='Helper',
-    subtype=None,
-    text='[op 1] all done',
-)
+from datetime import datetime
+from datetime import timezone
+from typing import Literal
 
 
-async def test_exclude_events() -> None:
-    closed: list[bool] = []
+class _Note(botwatch.Event):
+    type: Literal['test.note'] = 'test.note'
 
-    async def source() -> botwatch.Source[int, slack.MessagePosted]:
-        try:
-            yield botwatch.Update(events=(), state=0)
-            yield botwatch.Update(
-                events=(_MESSAGE, _MESSAGE.model_copy(update={'text': 'kept'})),
-                state=1,
-            )
-            yield botwatch.Update(events=(_MESSAGE,), state=2)
-        finally:
-            closed.append(True)
-
-    updates = botwatch.exclude_events(
-        source(),
-        lambda message: message.text.startswith('[op 1]'),
-    )
-    async with contextlib.aclosing(updates):
-        received = [
-            ([event.text for event in update.events], update.state)
-            async for update in updates
-        ]
-
-    assert received == [([], 0), (['kept'], 1), ([], 2)]
-    assert closed == [True]
+    text: str
 
 
-@pytest.mark.parametrize(
-    ('rule', 'matches'),
-    [
-        ({'user': 'U0BOT'}, True),
-        ({'user': 'U0SOMEONE'}, False),
-        ({'bot_id': 'B0BOT', 'username': 'Helper'}, True),
-        ({'bot_id': 'B0BOT', 'username': 'Other'}, False),
-        ({'text': r'^\[op 1\]'}, True),
-        ({'text': r'^\[op 2\]'}, False),
-        ({'user': 'U0BOT', 'text': 'done$'}, True),
-    ],
-)
-def test_ExcludeRule__matches(
-    rule: dict[str, str],
-    matches: bool,
-) -> None:
-    assert slack.ExcludeRule.model_validate(rule).matches(_MESSAGE) is matches
+def _create_note(text: str) -> _Note:
+    return _Note(id=text, time=datetime.now(timezone.utc), text=text)
 
 
-@pytest.mark.parametrize('rule', [{}, {'user': None}, {'text': '('}])
-def test_ExcludeRule__rejects_invalid(rule: dict[str, str | None]) -> None:
-    with pytest.raises(pydantic.ValidationError):
-        slack.ExcludeRule.model_validate(rule)
+async def _play(
+    updates: list[botwatch.Update[int, _Note]],
+    closed: list[bool],
+) -> botwatch.Source[int, _Note]:
+    """A source that yields ``updates``, then waits forever like a real one,
+    and records when it's closed."""
+    try:
+        for update in updates:
+            yield update
+        await asyncio.Event().wait()
+    finally:
+        closed.append(True)
+
+
+def _is_mine(note: _Note) -> bool:
+    return note.text.startswith('[op 1]')
+
+
+class Test_exclude_events:
+    async def test__drops_events_but_keeps_state(self) -> None:
+        closed: list[bool] = []
+        source = _play(
+            [
+                botwatch.Update(events=(), state=0),
+                botwatch.Update(
+                    events=(_create_note('[op 1] mine'), _create_note('kept')),
+                    state=1,
+                ),
+                botwatch.Update(events=(_create_note('[op 1] mine'),), state=2),
+            ],
+            closed,
+        )
+        updates = botwatch.exclude_events(source, _is_mine)
+
+        async with contextlib.aclosing(updates):
+            received = [
+                ([event.text for event in update.events], update.state)
+                for update in [await anext(updates) for _ in range(3)]
+            ]
+
+        assert received == [([], 0), (['kept'], 1), ([], 2)]
+        assert closed == [True]
+
+    async def test__closes_the_source_when_closed(self) -> None:
+        closed: list[bool] = []
+        updates = botwatch.exclude_events(
+            _play([botwatch.Update(events=(), state=0)], closed),
+            _is_mine,
+        )
+
+        await anext(updates)
+        await updates.aclose()
+
+        assert closed == [True]
+
+    async def test__closes_the_source_when_its_pull_is_cancelled(self) -> None:
+        closed: list[bool] = []
+        updates = botwatch.exclude_events(_play([], closed), _is_mine)
+
+        pull = asyncio.ensure_future(anext(updates))
+        await asyncio.sleep(0)
+        pull.cancel()
+        await asyncio.gather(pull, return_exceptions=True)
+
+        assert closed == [True]

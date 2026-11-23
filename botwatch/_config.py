@@ -66,8 +66,8 @@ class SlackSourceConfig(pydantic.BaseModel):
     )
 
     exclude: tuple[slack.ExcludeRule, ...] = ()
-    """Messages to skip, such as the caller's own posts. Skipped messages still
-    advance the source."""
+    """Messages to skip: those matching any of these rules, such as the
+    caller's own posts. Skipped messages still advance the source."""
 
     @property
     def key(self) -> SourceKey:

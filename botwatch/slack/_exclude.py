@@ -22,12 +22,14 @@ class ExcludeRule(pydantic.BaseModel):
     """The display name an app set when posting with ``chat:write.customize``."""
 
     text: re.Pattern[str] | None = None
-    """A regular expression to search the text for."""
+    """A regular expression, searched for anywhere in the message's raw Slack
+    text, where ``&``, ``<`` and ``>`` arrive as ``&amp;``, ``&lt;`` and
+    ``&gt;``. Anchor it with ``^``; set flags inline, such as ``(?i)``."""
 
     @pydantic.model_validator(mode='after')
     def _check_some_field_is_set(self) -> Self:
-        fields = (self.user, self.bot_id, self.username, self.text)
-        if all(field is None for field in fields):
+        pattern = self.text.pattern if self.text is not None else None
+        if not any((self.user, self.bot_id, self.username, pattern)):
             raise ValueError('an exclude rule needs at least one field')
         return self
 
