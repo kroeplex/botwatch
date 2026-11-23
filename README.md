@@ -21,7 +21,8 @@ no daemon, no hidden state, and no cursor-keeping in the agent itself.
 
 ## Status
 
-**Early design.** There is no implementation yet. The design proposal is
+**Early implementation.** Slack sources work as a Python library
+(`botwatch.slack`); the `botwatch` command comes next. The design proposal is
 [0015](docs/issues/0015.md).
 
 ## The shape of it
