@@ -7,16 +7,17 @@ Conventions and how to write a good issue: **[the shared issue tracker guide](ht
 
 | # | Title | Kind | Status |
 |---|---|---|---|
+| [0015](0015.md) | Watch many sources in one blocking run, each carrying its own state | RFC | Open |
 | [0013](0013.md) | Resync the vendored boilerplate before this repo is published | Bug | Open |
-| [0012](0012.md) | Add the Pub/Sub driver, making `botwatch` push-capable | Feature | Open |
-| [0011](0011.md) | Add the GitHub driver for pull requests, reviews, and check runs | Feature | Open |
-| [0010](0010.md) | Add the git driver, watching refs in local and remote repositories | Feature | Open |
-| [0009](0009.md) | Add the Slack driver, one botwatch channel per conversation | Feature | Open |
-| [0008](0008.md) | Specify `prune` and bound retired-channel growth | Feature | Open |
-| [0007](0007.md) | Add `botwatch inspect` for reading a state file's health out of band | Feature | Open |
-| [0006](0006.md) | Wait on every channel at once: the select, the two clocks, and the departure guards | Feature | Open |
-| [0005](0005.md) | Define the channel driver contract and ship a conformance kit every driver must pass | Feature | Open |
-| [0004](0004.md) | Emit events as JSONL with a stable envelope, and report channel failures on the same stream | Feature | Open |
-| [0003](0003.md) | Persist run state atomically, with a channel lifecycle that survives reconfiguration | Feature | Open |
-| [0002](0002.md) | Load the config and enforce the channel key contract | Feature | Open |
-| [0001](0001.md) | botwatch: a one-shot `select` over many event sources | RFC | Open |
+| [0012](0012.md) | Add the Pub/Sub driver, making `botwatch` push-capable | Feature | Superseded by 0015 |
+| [0011](0011.md) | Add the GitHub driver for pull requests, reviews, and check runs | Feature | Superseded by 0015 |
+| [0010](0010.md) | Add the git driver, watching refs in local and remote repositories | Feature | Superseded by 0015 |
+| [0009](0009.md) | Add the Slack driver, one botwatch channel per conversation | Feature | Superseded by 0015 |
+| [0008](0008.md) | Specify `prune` and bound retired-channel growth | Feature | Superseded by 0015 |
+| [0007](0007.md) | Add `botwatch inspect` for reading a state file's health out of band | Feature | Superseded by 0015 |
+| [0006](0006.md) | Wait on every channel at once: the select, the two clocks, and the departure guards | Feature | Superseded by 0015 |
+| [0005](0005.md) | Define the channel driver contract and ship a conformance kit every driver must pass | Feature | Superseded by 0015 |
+| [0004](0004.md) | Emit events as JSONL with a stable envelope, and report channel failures on the same stream | Feature | Superseded by 0015 |
+| [0003](0003.md) | Persist run state atomically, with a channel lifecycle that survives reconfiguration | Feature | Superseded by 0015 |
+| [0002](0002.md) | Load the config and enforce the channel key contract | Feature | Superseded by 0015 |
+| [0001](0001.md) | botwatch: a one-shot `select` over many event sources | RFC | Superseded by 0015 |
