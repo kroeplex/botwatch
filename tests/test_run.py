@@ -223,3 +223,29 @@ async def test_run_once__where_a_run_ends_never_changes_what_is_emitted(
         assert records == first_seen
     else:
         assert len(records) > len(first_seen)  # the crashed runs did replay
+
+
+async def test_run_once__skips_excluded_messages_but_moves_past_them() -> None:
+    fake = _fake_slack.FakeSlack()
+    fake.post(_create_ts(1), user='U0ME', text='mine')
+    fake.post(_create_ts(2), user='U0YOU', text='yours')
+    fake.post(_create_ts(3), user='U0ME', text='mine again')
+    excluding = _TOP.model_copy(update={'exclude': (slack.ExcludeRule(user='U0ME'),)})
+    config = _config.Config(
+        quiet_timeout=timedelta(seconds=0.2),
+        linger=timedelta(0),
+        sources=(excluding,),
+    )
+    previous = _state.StateFile(sources={_TOP.key: slack.SlackState(after=_PARENT)})
+    out = io.StringIO()
+
+    async with fake.create_client() as client:
+        state = await _run.run_once(
+            config,
+            previous,
+            slack_client=client,
+            out=out,
+        )
+
+    assert [record[2] for record in _read_records(out)] == [_create_ts(2)]
+    assert state.sources[_TOP.key] == slack.SlackState(after=_create_ts(3))

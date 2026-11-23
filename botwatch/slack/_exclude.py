@@ -1,0 +1,42 @@
+"""Rules for messages a Slack source should skip."""
+
+import pydantic
+import re
+from . import _watch
+from typing import Self
+
+
+class ExcludeRule(pydantic.BaseModel):
+    """Matches a message when every field set here matches it, such as the
+    caller's own posts, recognised by their author or a text prefix."""
+
+    model_config = pydantic.ConfigDict(extra='forbid', frozen=True)
+
+    user: str | None = None
+    """The author's user ID."""
+
+    bot_id: str | None = None
+    """The ID of the app integration that posted it."""
+
+    username: str | None = None
+    """The display name an app set when posting with ``chat:write.customize``."""
+
+    text: re.Pattern[str] | None = None
+    """A regular expression, searched for anywhere in the message's raw Slack
+    text, where ``&``, ``<`` and ``>`` arrive as ``&amp;``, ``&lt;`` and
+    ``&gt;``. Anchor it with ``^``; set flags inline, such as ``(?i)``."""
+
+    @pydantic.model_validator(mode='after')
+    def _check_some_field_is_set(self) -> Self:
+        pattern = self.text.pattern if self.text is not None else None
+        if not any((self.user, self.bot_id, self.username, pattern)):
+            raise ValueError('an exclude rule needs at least one field')
+        return self
+
+    def matches(self, message: _watch.MessagePosted) -> bool:
+        return (
+            (self.user is None or message.user == self.user)
+            and (self.bot_id is None or message.bot_id == self.bot_id)
+            and (self.username is None or message.username == self.username)
+            and (self.text is None or self.text.search(message.text) is not None)
+        )
