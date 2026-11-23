@@ -1,17 +1,7 @@
 """One run: select over the configured sources and write their events.
 
-Design spec: **where a run ends never changes what is emitted.** For every
-source whose state has been saved, given the same observations, successive runs
-emit the same sequence of its events once repeats are dropped by ``(source,
-id)``, ``botwatch.*`` events aside, however each run ends, a crash included.
-Only a crash may repeat events, and none skips one.
-
-A new source's state is first saved by a run that ends normally after the
-source has delivered its first update; until then, each run starts it from that
-run's own now. The gap between runs observes nothing, so several changes inside
-it can surface as one, as with a slower poll.
-
-Checked by ``test_run_once__where_a_run_ends_never_changes_what_is_emitted``.
+Held to the design spec "where a run ends never changes what is emitted"; see
+the Design specs section of ``docs/design.md``.
 """
 
 import contextlib

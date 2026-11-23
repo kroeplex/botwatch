@@ -18,7 +18,8 @@ file, blocks until events arrive or a timeout elapses, emits the new events on
 stdout, advances the state, and exits. See the [README](README.md) for the shape
 of it and the design proposal, [0015](docs/issues/0015.md).
 
-Implementation is under way, following 0015's rollout.
+How it works: [`docs/design.md`](docs/design.md), which every PR that changes
+what it describes keeps current.
 
 ## Repo-specific notes
 
