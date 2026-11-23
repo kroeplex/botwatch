@@ -684,7 +684,7 @@ class Test_watch:
 
     @pytest.mark.parametrize(
         ('start_after', 'reported'),
-        [(at(1), ['success']), (at(5), [])],
+        [(at(1), ['success']), (at(3), ['success']), (at(5), [])],
     )
     async def test__reports_a_conclusion_reached_since_its_start_position(
         self,
@@ -721,3 +721,33 @@ class Test_watch:
             for event in update.events
             if isinstance(event, github.ChecksConcluded)
         ] == reported
+
+    async def test__times_a_failure_by_its_first_failing_check(self) -> None:
+        fake = _fake_github.FakeGitHub(now=at(1))
+        fake.check('lint', 'failure')
+        fake.now = at(8)
+        fake.check('test')
+        fake.now = at(10)
+        clock_reads = 0
+
+        def comment_on_the_first_poll(request: httpx.Request) -> None:
+            nonlocal clock_reads
+            if request.url.path == '/rate_limit':
+                clock_reads += 1
+                if clock_reads == 2:
+                    fake.comment(11)
+
+        fake.after_each = comment_on_the_first_poll
+        async with fake.create_client() as client:
+            source = github.watch(
+                client,
+                _REPO,
+                _PULL,
+                state=github.GitHubState(after=at(5)),
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                update = await anext(source)
+
+        assert [event.type for event in update.events] == ['github.comment_posted']

@@ -237,8 +237,8 @@ class StateChanged(_source.Event):
 
 class ChecksConcluded(_source.Event):
     """The head commit's checks reached a conclusion other than the last one
-    reported or recorded for that head: one failed, or all finished. A re-run that turns a
-    failure into a success is reported too."""
+    reported or recorded for that head: one failed, or all finished. A re-run
+    that turns a failure into a success is reported too."""
 
     type: Literal['github.checks_concluded'] = 'github.checks_concluded'
 
@@ -288,8 +288,10 @@ class _Verdict:
     failed: tuple[str, ...]
     pending: tuple[str, ...]
 
-    finished_at: datetime | None
-    """When the last check or status to finish did, by GitHub's clock."""
+    reached_at: datetime
+    """When the conclusion was reached: a failure's first failing check,
+    otherwise the last check, status or suite to finish. By GitHub's clock,
+    except a check run's ``completed_at``, which its app sets."""
 
 
 def _is_running(suite: _api.CheckSuite, now: datetime) -> bool:
@@ -323,20 +325,27 @@ def _conclude(
     every check created so far has.
     """
     latest = {run.name: run for run in sorted(runs, key=lambda run: run.id)}
-    failures = (
-        {
-            run.name
+    # Each failure, and when it finished.
+    failures: dict[str, datetime] = {
+        **{
+            run.name: run.completed_at or now
             for run in latest.values()
             if run.status == 'completed' and run.conclusion in _FAILED_CONCLUSIONS
-        }
-        | {status.context for status in statuses if status.state in _FAILED_STATES}
-        | {
-            suite.app.name if suite.app is not None else 'check suite'
+        },
+        **{
+            status.context: status.updated_at
+            for status in statuses
+            if status.state in _FAILED_STATES
+        },
+        **{
+            (suite.app.name if suite.app is not None else 'check suite'): (
+                suite.updated_at
+            )
             for suite in suites
             if suite.latest_check_runs_count == 0
             and suite.conclusion in _FAILED_SUITE_CONCLUSIONS
-        }
-    )
+        },
+    }
     cancellations = {
         run.name for run in latest.values() if run.conclusion == 'cancelled'
     }
@@ -347,18 +356,23 @@ def _conclude(
         ),
     )
     running = bool(pending) or any(_is_running(suite, now) for suite in suites)
-    failed = tuple(sorted(failures | cancellations))
+    failed = tuple(sorted(failures.keys() | cancellations))
     finished_at = max(
         [
             *(run.completed_at for run in latest.values() if run.completed_at),
             *(status.updated_at for status in statuses if status.state != 'pending'),
             *(suite.updated_at for suite in suites if suite.status == 'completed'),
+            *(  # when an empty queued suite stops holding back a success
+                suite.created_at + _EMPTY_SUITE_GRACE
+                for suite in suites
+                if suite.status == 'queued' and suite.latest_check_runs_count == 0
+            ),
         ],
-        default=None,
+        default=now,
     )
     verdict: _Verdict | None
     if failures:
-        verdict = _Verdict('failure', failed, pending, finished_at)
+        verdict = _Verdict('failure', failed, pending, min(failures.values()))
     elif running or not (runs or statuses):
         verdict = None
     elif cancellations:
@@ -597,10 +611,7 @@ async def _fetch_start_state(
     pull: int,
     state: GitHubState | None,
 ) -> GitHubState:
-    """The state a source starts from: ``state``, or from now by GitHub's
-    clock, taking the pull request's current head when it has none, and its
-    checks conclusion too, unless that was reached since ``after`` and so is
-    left for the first poll to report."""
+    """The state a source starts from, as :func:`watch` describes."""
     current = (
         state if state is not None else GitHubState(after=await client.fetch_time())
     )
@@ -616,11 +627,7 @@ async def _fetch_start_state(
             head,
             await client.fetch_time(),
         )
-        is_new = (
-            verdict is not None
-            and verdict.finished_at is not None
-            and verdict.finished_at >= current.after
-        )
+        is_new = verdict is not None and verdict.reached_at >= current.after
         current = current.model_copy(
             update={
                 'checks': (
@@ -642,9 +649,12 @@ async def watch(
     """Watches a pull request's comments, reviews, head, state and checks,
     forever.
 
-    Starts from :func:`_fetch_start_state`'s state, which is ``state`` or now,
-    and first yields it as a checkpoint. Then it polls every ``poll_interval``
-    and yields an update for each poll that finds new events.
+    Starts from ``state``, or when it's ``None`` from now by GitHub's clock. A
+    state without a head takes the current one, and one without checks takes
+    their conclusion as seen, unless it was reached at or after ``after``, which
+    the first poll then reports. It first yields that starting state as a
+    checkpoint, then polls every ``poll_interval`` and yields an update for
+    each poll that finds new events.
     """
     current = await _fetch_start_state(client, repo, pull, state)
     yield _source.Update(events=(), state=current)
