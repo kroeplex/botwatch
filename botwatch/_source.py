@@ -26,7 +26,7 @@ class Event(pydantic.BaseModel):
     time: datetime
     """When it happened at the source."""
 
-    @pydantic.field_serializer('time')
+    @pydantic.field_serializer('time', when_used='json')
     def _serialize_time(self, time: datetime) -> str:
         return _utils.datetime.to_rfc3339(time)
 

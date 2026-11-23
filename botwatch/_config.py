@@ -27,11 +27,19 @@ _DURATION_UNITS = {
 }
 
 
-def _parse_duration(value: object) -> object:
-    """Turns text such as ``'5s'`` or ``'55m'`` into a timedelta, leaving
-    anything else for pydantic to validate."""
-    match = _DURATION_PATTERN.fullmatch(value) if isinstance(value, str) else None
-    return float(match[1]) * _DURATION_UNITS[match[2]] if match else value
+def _parse_duration(value: object) -> timedelta:
+    """Parses text such as ``'500ms'``, ``'5s'``, ``'55m'`` or ``'1h'``. A
+    timedelta passes through."""
+    if isinstance(value, timedelta):
+        duration = value
+    elif isinstance(value, str) and (match := _DURATION_PATTERN.fullmatch(value)):
+        try:
+            duration = float(match[1]) * _DURATION_UNITS[match[2]]
+        except OverflowError as error:
+            raise ValueError(f'duration too long: {value}') from error
+    else:
+        raise ValueError(f'not a duration such as 5s or 55m: {value!r}')
+    return duration
 
 
 type Duration = Annotated[timedelta, pydantic.BeforeValidator(_parse_duration)]
@@ -46,13 +54,15 @@ class SlackSourceConfig(pydantic.BaseModel):
 
     type: Literal['slack']
 
-    conversation: str
-    """The conversation's ID, such as ``C0123456789``."""
+    conversation: slack.ConversationId
 
     thread_ts: slack.SlackTs | None = None
     """The thread's parent ``ts``, to watch that thread."""
 
-    poll_interval: Duration = slack.DEFAULT_POLL_INTERVAL
+    poll_interval: Duration = pydantic.Field(
+        default=slack.DEFAULT_POLL_INTERVAL,
+        gt=timedelta(0),
+    )
 
     @property
     def key(self) -> SourceKey:
@@ -62,6 +72,7 @@ class SlackSourceConfig(pydantic.BaseModel):
     def watch(
         self,
         client: slack.SlackClient,
+        *,
         state: slack.SlackState | None,
     ) -> _source.Source[slack.SlackState, slack.MessagePosted]:
         return slack.watch(
@@ -78,10 +89,16 @@ class Config(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(extra='forbid', frozen=True)
 
-    quiet_timeout: Duration = timedelta(minutes=20)
+    quiet_timeout: Duration = pydantic.Field(
+        default=timedelta(minutes=20),
+        gt=timedelta(0),
+    )
     """How long a run waits for its first event."""
 
-    linger: Duration = timedelta(seconds=5)
+    linger: Duration = pydantic.Field(
+        default=timedelta(seconds=5),
+        ge=timedelta(0),
+    )
     """How much longer a run collects events after its first."""
 
     sources: tuple[SlackSourceConfig, ...] = ()

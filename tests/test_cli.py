@@ -1,5 +1,8 @@
+import json
 import pytest
+from . import _fake_slack
 from botwatch import _cli
+from botwatch import slack
 from pathlib import Path
 from pytest_mock import MockerFixture
 
@@ -23,16 +26,19 @@ def test_main(
     assert token == 'xoxb-test'
 
 
-@pytest.mark.parametrize('config', [None, 'sources: [{type: slack}]', 'sources: ['])
+@pytest.mark.parametrize(
+    'config',
+    [None, b'sources: [{type: slack}]', b'sources: [', b'sources: ["\xff"]'],
+)
 def test_main__fails_on_a_bad_config(
-    config: str | None,
+    config: bytes | None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     path = tmp_path / 'watch.yaml'
     if config is not None:
-        path.write_text(config)
+        path.write_bytes(config)
     monkeypatch.setenv('SLACK_TOKEN', 'xoxb-test')
 
     with pytest.raises(SystemExit) as exited:
@@ -56,3 +62,30 @@ def test_main__fails_without_a_token(
 
     assert exited.value.code == 2
     assert 'set SLACK_TOKEN' in capsys.readouterr().err
+
+
+def test_main__writes_only_json_lines_to_stdout(
+    tmp_path: Path,
+    mocker: MockerFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = _fake_slack.FakeSlack().create_client()
+    mocker.patch.object(slack, 'SlackClient', return_value=client)
+    path = tmp_path / 'watch.yaml'
+    path.write_text(
+        'quiet_timeout: 200ms\n'
+        'linger: 0s\n'
+        'sources: [{type: slack, conversation: C0MISSING}]\n',
+    )
+    monkeypatch.setenv('SLACK_TOKEN', 'xoxb-test')
+
+    _cli.main(['--config', str(path)])
+
+    lines = capsys.readouterr().out.splitlines()
+    assert [json.loads(line)['event']['type'] for line in lines] == [
+        'botwatch.source_failed',
+    ]
+    assert 'Traceback' in caplog.text
+    assert 'channel_not_found' in caplog.text

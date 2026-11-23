@@ -2,6 +2,7 @@ import asyncio
 import botwatch
 import contextlib
 import pytest
+from botwatch import _select
 from collections.abc import Sequence
 from datetime import datetime
 from datetime import timedelta
@@ -217,3 +218,25 @@ class Test_select:
             await consumer
 
         assert sorted(closed) == ['a', 'b']
+
+
+async def test_get_error() -> None:
+    async def succeed() -> int:
+        return 1
+
+    async def fail() -> int:
+        raise ValueError('boom')
+
+    async def cancel_itself() -> int:
+        raise asyncio.CancelledError()
+
+    tasks = [
+        asyncio.create_task(coroutine()) for coroutine in [succeed, fail, cancel_itself]
+    ]
+    await asyncio.wait(tasks)
+
+    errors = [_select.get_error(task) for task in tasks]
+
+    assert errors[0] is None
+    assert repr(errors[1]) == "ValueError('boom')"
+    assert isinstance(errors[2], asyncio.CancelledError)

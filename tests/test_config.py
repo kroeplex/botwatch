@@ -48,6 +48,13 @@ class Test_Config__load:
         {'sources': [{'type': 'slack', 'conversation': 'C1', 'thread_ts': '1'}]},
         {'sources': [{'type': 'slack', 'conversation': 'C1', 'channel': 'C2'}]},
         {'linger': 'soon'},
+        {'linger': 5},
+        {'linger': 'PT5S'},
+        {'quiet_timeout': '0s'},
+        {'quiet_timeout': '99999999999h'},
+        {'sources': [{'type': 'slack', 'conversation': 'general'}]},
+        {'sources': [{'type': 'slack', 'conversation': 'C1/2'}]},
+        {'sources': [{'type': 'slack', 'conversation': 'C1', 'poll_interval': '0s'}]},
     ],
 )
 def test_Config__rejects_invalid(document: dict[str, object]) -> None:

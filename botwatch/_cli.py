@@ -2,9 +2,9 @@
 
 import argparse
 import asyncio
+import io
 import logging
 import os
-import pydantic
 import sys
 import yaml
 from . import _config
@@ -46,7 +46,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 def _load_config(path: Path) -> _config.Config:
     try:
         config = _config.Config.load(path)
-    except (OSError, yaml.YAMLError, pydantic.ValidationError) as error:
+    except (OSError, ValueError, yaml.YAMLError) as error:
         _fail(f'bad config {path}: {error}')
     return config
 
@@ -61,6 +61,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         format='botwatch: %(levelname)s: %(message)s',
         level=logging.WARNING,
     )
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding='utf-8')  # JSON Lines is UTF-8
     args = _parse_args(argv)
     config = _load_config(args.config)
 

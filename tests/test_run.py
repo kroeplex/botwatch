@@ -1,5 +1,3 @@
-# pylint: disable=protected-access
-
 import asyncio
 import io
 import json
@@ -21,7 +19,7 @@ async def test_run_once() -> None:
                 conversation=_fake_slack.CONVERSATION,
                 poll_interval=timedelta(seconds=0.01),
             ),
-            _config.SlackSourceConfig(type='slack', conversation='C_MISSING'),
+            _config.SlackSourceConfig(type='slack', conversation='C0MISSING'),
         ),
     )
     out = io.StringIO()
@@ -37,7 +35,7 @@ async def test_run_once() -> None:
 
     records = [json.loads(line) for line in out.getvalue().splitlines()]
     assert [(record['source'], record['event']['type']) for record in records] == [
-        ('slack:C_MISSING', 'botwatch.source_failed'),
+        ('slack:C0MISSING', 'botwatch.source_failed'),
         ('slack:C0123456789', 'slack.message_posted'),
     ]
     assert 'channel_not_found' in records[0]['event']['error']
@@ -55,25 +53,3 @@ async def test_run_once() -> None:
         'text': 'during the run',
     }
     assert records[1]['event']['time'] == '2026-08-01T16:00:02.000Z'
-
-
-async def test_get_error() -> None:
-    async def succeed() -> int:
-        return 1
-
-    async def fail() -> int:
-        raise ValueError('boom')
-
-    async def cancel_itself() -> int:
-        raise asyncio.CancelledError()
-
-    tasks = [
-        asyncio.create_task(coroutine()) for coroutine in [succeed, fail, cancel_itself]
-    ]
-    await asyncio.wait(tasks)
-
-    errors = [_run._get_error(task) for task in tasks]
-
-    assert errors[0] is None
-    assert repr(errors[1]) == "ValueError('boom')"
-    assert isinstance(errors[2], asyncio.CancelledError)
