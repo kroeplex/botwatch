@@ -105,14 +105,23 @@ class Test_select:
     async def test__departs_a_linger_after_the_first_event(self) -> None:
         closed: list[str] = []
         sources = {
-            'a': _play([(0.05, _create_update(1, 'a1'))], closed, 'a'),
-            'b': _play([(0.1, _create_update(1, 'b1'))], closed, 'b'),
-            'c': _play([(0.4, _create_update(1, 'c1'))], closed, 'c'),
+            'a': _play(
+                [(0, _create_update(0)), (0.05, _create_update(1, 'a1'))], closed, 'a'
+            ),
+            'b': _play(
+                [(0, _create_update(0)), (0.1, _create_update(1, 'b1'))], closed, 'b'
+            ),
+            'c': _play(
+                [(0, _create_update(0)), (0.4, _create_update(1, 'c1'))], closed, 'c'
+            ),
         }
 
         received, elapsed = await _run(sources)
 
-        assert [key for key, _ in received] == ['a', 'b']
+        assert [key for key, outcome in received if outcome != _create_update(0)] == [
+            'a',
+            'b',
+        ]
         assert elapsed < _QUIET.total_seconds()
         assert sorted(closed) == ['a', 'b', 'c']
 
@@ -127,6 +136,18 @@ class Test_select:
         assert received[0][0] == 'a'
         assert elapsed < _LINGER.total_seconds()
         assert sorted(closed) == ['a', 'b']
+
+    async def test__waits_for_every_source_to_start(self) -> None:
+        closed: list[str] = []
+        sources = {
+            'fast': _play([(0, _create_update(1, 'f1'))], closed, 'fast'),
+            'slow': _play([(0.2, _create_update(0))], closed, 'slow'),
+        }
+
+        received, elapsed = await _run(sources, linger=timedelta(0))
+
+        assert [key for key, _ in received] == ['fast', 'slow']
+        assert 0.2 <= elapsed < _QUIET.total_seconds()
 
     async def test__failures_never_open_the_window(self) -> None:
         closed: list[str] = []

@@ -144,3 +144,65 @@ def test_main__writes_only_json_lines_to_stdout(
     ]
     assert 'Traceback' in caplog.text
     assert 'channel_not_found' in caplog.text
+
+
+def test_main__fails_on_a_state_file_it_cannot_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / 'watch.yaml'
+    config_path.write_text(_CONFIG)
+    monkeypatch.setenv('SLACK_TOKEN', 'xoxb-test')
+
+    with pytest.raises(SystemExit) as exited:
+        _cli.main(
+            ['--config', str(config_path), '--state', str(tmp_path / 'no/state.yaml')],
+        )
+
+    assert exited.value.code == 2
+    assert 'cannot write a state file' in capsys.readouterr().err
+
+
+def test_main__fails_when_saving_fails(
+    tmp_path: Path,
+    mocker: MockerFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / 'watch.yaml'
+    config_path.write_text(_CONFIG)
+    monkeypatch.setenv('SLACK_TOKEN', 'xoxb-test')
+    mocker.patch.object(_cli, '_watch', return_value=_state.StateFile())
+    mocker.patch.object(_state.StateFile, 'save', side_effect=OSError('disk full'))
+
+    with pytest.raises(SystemExit) as exited:
+        _cli.main(['--config', str(config_path), '--state', str(tmp_path / 's.yaml')])
+
+    assert exited.value.code == 2
+    assert 'disk full' in capsys.readouterr().err
+
+
+def test_main__keeps_the_old_state_when_the_run_fails(
+    tmp_path: Path,
+    mocker: MockerFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / 'watch.yaml'
+    config_path.write_text(_CONFIG)
+    state_path = tmp_path / 'state.yaml'
+    previous = _state.StateFile(
+        sources={
+            _config.SourceKey('slack:C0123456789'): slack.SlackState(
+                after='1785600001.000000',
+            ),
+        },
+    )
+    previous.save(state_path)
+    monkeypatch.setenv('SLACK_TOKEN', 'xoxb-test')
+    mocker.patch.object(_cli, '_watch', side_effect=BrokenPipeError())
+
+    with pytest.raises(BrokenPipeError):
+        _cli.main(['--config', str(config_path), '--state', str(state_path)])
+
+    assert _state.StateFile.load(state_path) == previous

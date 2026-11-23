@@ -2,6 +2,7 @@
 
 import os
 import pydantic
+import shutil
 import tempfile
 import yaml
 from . import _config
@@ -19,22 +20,24 @@ def _write_atomically(
     text: str,
 ) -> None:
     """Writes ``text`` to a temporary file beside ``path``, then renames it over
-    ``path``, so a reader sees the old file or the new one, never a torn one."""
+    ``path``, so a reader sees the old file or the new one, never a torn one.
+
+    The temporary file is removed if anything fails, and an existing file's
+    permissions carry over.
+    """
     with tempfile.NamedTemporaryFile(
         'w',
         encoding='utf-8',
         dir=path.parent,
         prefix=f'.{path.name}.',
-        delete=False,
+        delete_on_close=False,
     ) as temporary:
         temporary.write(text)
         temporary.flush()
         os.fsync(temporary.fileno())
-    try:
+        if path.exists():
+            shutil.copymode(path, temporary.name)
         os.replace(temporary.name, path)
-    except OSError:
-        os.unlink(temporary.name)
-        raise
 
 
 class StateFile(pydantic.BaseModel):

@@ -61,11 +61,23 @@ def _load_config(path: Path) -> _config.Config:
 
 
 def _load_state(path: Path | None) -> _state.StateFile:
+    if path is not None and not os.access(path.parent, os.W_OK):
+        _fail(f'cannot write a state file in {path.parent}')
     try:
         state = _state.StateFile.load(path) if path is not None else _state.StateFile()
     except (OSError, ValueError, yaml.YAMLError) as error:
         _fail(f'bad state file {path}: {error}')
     return state
+
+
+def _save_state(
+    state: _state.StateFile,
+    path: Path,
+) -> None:
+    try:
+        state.save(path)
+    except OSError as error:
+        _fail(f'cannot save the state file {path}: {error}')
 
 
 async def _watch(
@@ -100,4 +112,4 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     new_state = asyncio.run(_watch(config, state, token))
     if args.state is not None:
-        new_state.save(args.state)
+        _save_state(new_state, args.state)

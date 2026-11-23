@@ -1,11 +1,14 @@
 """One run: select over the configured sources and write their events.
 
-Design spec: **where a run ends never changes what is emitted.** Given the same
-observations from the sources, successive runs emit, per source, the same
-sequence of events once repeats are dropped by ``(source, id)``, ``botwatch.*``
-events aside, however each run ends: timeout, linger, or a crash. A crash may
-repeat events but never skips one. The gap between runs observes nothing, so
-several changes inside it can surface as one, as with a slower poll.
+Design spec: **where a run ends never changes what is emitted.** For every
+source whose state has been saved, given the same observations, successive runs
+emit the same sequence of its events (``botwatch.*`` events aside) however each
+run ends, a crash included. Only a crash may repeat events, and none skips one.
+
+A new source's state is first saved when a run that started it ends normally; a
+run never departs before every source has started. The gap between runs
+observes nothing, so several changes inside it can surface as one, as with a
+slower poll.
 
 Checked by ``test_run_once__where_a_run_ends_never_changes_what_is_emitted``.
 """

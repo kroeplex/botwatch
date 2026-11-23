@@ -28,6 +28,12 @@ _THREAD = _config.SlackSourceConfig(
 )
 
 
+_NO_KEY = _config.SourceKey('slack:C0NO')
+
+_NO_STATE = slack.SlackState(after=_PARENT)
+"""The saved state of a source that fails, which it must keep."""
+
+
 def _create_ts(number: int) -> str:
     return f'{1785600000 + number}.000000'
 
@@ -59,7 +65,7 @@ async def test_run_once() -> None:
         poster = asyncio.create_task(post_later())
         state = await _run.run_once(
             config,
-            _state.StateFile(),
+            _state.StateFile(sources={_NO_KEY: _NO_STATE}),
             slack_client=client,
             out=out,
         )
@@ -84,7 +90,10 @@ async def test_run_once() -> None:
         'text': 'during the run',
     }
     assert state == _state.StateFile(
-        sources={_TOP.key: slack.SlackState(after=_create_ts(2))},
+        sources={
+            _NO_KEY: _NO_STATE,
+            _TOP.key: slack.SlackState(after=_create_ts(2)),
+        },
     )
 
 
@@ -106,7 +115,12 @@ async def test_run_once__resumes_each_source_from_its_state() -> None:
     out = io.StringIO()
 
     async with fake.create_client() as client:
-        state = await _run.run_once(config, previous, slack_client=client, out=out)
+        state = await _run.run_once(
+            config,
+            previous,
+            slack_client=client,
+            out=out,
+        )
 
     assert [record[2] for record in _read_records(out)] == [
         _create_ts(2),
@@ -160,14 +174,24 @@ async def _watch_in_runs(
         poster = asyncio.create_task(_post_over_time(fake, 12))
         crashes = crash_after is not None
         while not poster.done():
-            run = _run.run_once(config, state, slack_client=client, out=out)
+            run = _run.run_once(
+                config,
+                state,
+                slack_client=client,
+                out=out,
+            )
             if crash_after is not None and crashes:
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(run, crash_after.total_seconds())
             else:
                 state = await run
             crashes = not crashes
-        state = await _run.run_once(config, state, slack_client=client, out=out)
+        state = await _run.run_once(
+            config,
+            state,
+            slack_client=client,
+            out=out,
+        )
 
     return _read_records(out)
 
