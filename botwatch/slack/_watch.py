@@ -7,9 +7,17 @@ from . import _api
 from . import _ts
 from collections.abc import Sequence
 from datetime import timedelta
+from typing import Annotated
 from typing import Literal
 
 DEFAULT_POLL_INTERVAL = timedelta(seconds=30)
+
+type ConversationId = Annotated[
+    str,
+    pydantic.StringConstraints(pattern=r'^[A-Z0-9]+$'),
+]
+"""A conversation's ID, such as ``C0123456789``: a channel, private channel, DM
+or group DM."""
 
 
 class SlackState(pydantic.BaseModel):
@@ -28,8 +36,7 @@ class MessagePosted(_source.Event):
 
     type: Literal['slack.message_posted'] = 'slack.message_posted'
 
-    conversation: str
-    """The conversation's ID: a channel, private channel, DM or group DM."""
+    conversation: ConversationId
 
     ts: _ts.SlackTs
     """The message's ``ts``, its ID within the conversation."""

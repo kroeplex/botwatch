@@ -49,15 +49,19 @@ async def _linger[ItemT](
                 yield item
 
 
+def get_error[ResultT](task: asyncio.Task[ResultT]) -> BaseException | None:
+    """What a completed pull raised, if anything, a source's own cancellation
+    included."""
+    return asyncio.CancelledError() if task.cancelled() else task.exception()
+
+
 def _has_events[KeyT, StateT, EventT: _source.Event](
     item: tuple[KeyT, asyncio.Task[_source.Update[StateT, EventT]]],
 ) -> bool:
     """Whether an item from :func:`turbopipes.aselect` is an update with
     events, as opposed to a checkpoint or a failure."""
     _key, task = item
-    return (
-        not task.cancelled() and task.exception() is None and bool(task.result().events)
-    )
+    return get_error(task) is None and bool(task.result().events)
 
 
 def select[KeyT, StateT, EventT: _source.Event](

@@ -69,8 +69,7 @@ class FakeSlack:
             update={'latest_reply': replies[-1].ts if replies else None},
         )
 
-    def _handle(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
+    def _serve_messages(self, request: httpx.Request) -> httpx.Response:
         method = request.url.path.rsplit('/', 1)[-1]
         matching = self._list_matching(method, request.url.params)
 
@@ -90,6 +89,17 @@ class FakeSlack:
                 },
             },
         )
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if request.url.params['channel'] == CONVERSATION:
+            response = self._serve_messages(request)
+        else:
+            response = httpx.Response(
+                200,
+                json={'ok': False, 'error': 'channel_not_found'},
+            )
+        return response
 
     def create_client(self) -> slack.SlackClient:
         return slack.SlackClient(
