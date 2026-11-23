@@ -2,6 +2,8 @@ import json
 import pytest
 from . import _fake_slack
 from botwatch import _cli
+from botwatch import _config
+from botwatch import _state
 from botwatch import slack
 from pathlib import Path
 from pytest_mock import MockerFixture
@@ -17,13 +19,66 @@ def test_main(
     path = tmp_path / 'watch.yaml'
     path.write_text(_CONFIG)
     monkeypatch.setenv('SLACK_TOKEN', 'xoxb-test')
-    watch = mocker.patch.object(_cli, '_watch')
+    watch = mocker.patch.object(_cli, '_watch', return_value=_state.StateFile())
 
     _cli.main(['--config', str(path)])
 
-    config, token = watch.call_args.args
+    config, state, token = watch.call_args.args
     assert [source.key for source in config.sources] == ['slack:C0123456789']
+    assert state == _state.StateFile()
     assert token == 'xoxb-test'
+
+
+def test_main__keeps_the_state(
+    tmp_path: Path,
+    mocker: MockerFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / 'watch.yaml'
+    config_path.write_text(_CONFIG)
+    state_path = tmp_path / 'state.yaml'
+    previous = _state.StateFile(
+        sources={
+            _config.SourceKey('slack:C0123456789'): slack.SlackState(
+                after='1785600001.000000',
+            ),
+        },
+    )
+    previous.save(state_path)
+    following = _state.StateFile(
+        sources={
+            _config.SourceKey('slack:C0123456789'): slack.SlackState(
+                after='1785600002.000000',
+            ),
+        },
+    )
+    monkeypatch.setenv('SLACK_TOKEN', 'xoxb-test')
+    watch = mocker.patch.object(_cli, '_watch', return_value=following)
+
+    _cli.main(['--config', str(config_path), '--state', str(state_path)])
+
+    assert watch.call_args.args[1] == previous
+    assert _state.StateFile.load(state_path) == following
+
+
+@pytest.mark.parametrize('state', [b'sources: [', b'sources: {"\xff": 1}'])
+def test_main__fails_on_a_bad_state_file(
+    state: bytes,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / 'watch.yaml'
+    config_path.write_text(_CONFIG)
+    state_path = tmp_path / 'state.yaml'
+    state_path.write_bytes(state)
+    monkeypatch.setenv('SLACK_TOKEN', 'xoxb-test')
+
+    with pytest.raises(SystemExit) as exited:
+        _cli.main(['--config', str(config_path), '--state', str(state_path)])
+
+    assert exited.value.code == 2
+    assert 'bad state file' in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

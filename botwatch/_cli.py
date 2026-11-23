@@ -9,6 +9,7 @@ import sys
 import yaml
 from . import _config
 from . import _run
+from . import _state
 from . import slack
 from collections.abc import Sequence
 from pathlib import Path
@@ -40,6 +41,14 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         required=True,
         help='a YAML (or JSON) file naming the sources to watch',
     )
+    parser.add_argument(
+        '--state',
+        type=Path,
+        help=(
+            'where to keep how far each source got, between runs; without it,'
+            ' every run starts from now'
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -51,9 +60,27 @@ def _load_config(path: Path) -> _config.Config:
     return config
 
 
-async def _watch(config: _config.Config, token: str) -> None:
+def _load_state(path: Path | None) -> _state.StateFile:
+    try:
+        state = _state.StateFile.load(path) if path is not None else _state.StateFile()
+    except (OSError, ValueError, yaml.YAMLError) as error:
+        _fail(f'bad state file {path}: {error}')
+    return state
+
+
+async def _watch(
+    config: _config.Config,
+    state: _state.StateFile,
+    token: str,
+) -> _state.StateFile:
     async with slack.SlackClient(token) as client:
-        await _run.run_once(config, slack_client=client, out=sys.stdout)
+        new_state = await _run.run_once(
+            config,
+            state,
+            slack_client=client,
+            out=sys.stdout,
+        )
+    return new_state
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -65,9 +92,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         sys.stdout.reconfigure(encoding='utf-8')  # JSON Lines is UTF-8
     args = _parse_args(argv)
     config = _load_config(args.config)
+    state = _load_state(args.state)
 
     token = os.environ.get(_TOKEN_VARIABLE, '')
     if config.sources and not token:
         _fail(f'set {_TOKEN_VARIABLE} to a Slack token')
 
-    asyncio.run(_watch(config, token))
+    new_state = asyncio.run(_watch(config, state, token))
+    if args.state is not None:
+        new_state.save(args.state)

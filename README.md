@@ -22,7 +22,8 @@ no daemon, no hidden state, and no cursor-keeping in the agent itself.
 ## Status
 
 **Early implementation.** The `botwatch` command watches Slack conversations
-and threads, without a state file yet. The design proposal is
+and threads, and keeps its place between runs in an optional state file. The
+design proposal is
 [0015](docs/issues/0015.md).
 
 ## The shape of it
