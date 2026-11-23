@@ -7,7 +7,10 @@ from ._api import GitHubClient
 from ._api import GitHubError
 from ._exclude import ExcludeRule
 from ._watch import DEFAULT_POLL_INTERVAL
+from ._watch import CheckResult
+from ._watch import ChecksConcluded
 from ._watch import CommentPosted
+from ._watch import Conclusion
 from ._watch import GitHubEvent
 from ._watch import GitHubState
 from ._watch import HeadChanged
@@ -20,7 +23,10 @@ from ._watch import Time
 from ._watch import watch
 
 __all__ = [
+    'CheckResult',
+    'ChecksConcluded',
     'CommentPosted',
+    'Conclusion',
     'DEFAULT_POLL_INTERVAL',
     'ExcludeRule',
     'GitHubClient',

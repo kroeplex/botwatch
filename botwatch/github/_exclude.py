@@ -15,14 +15,15 @@ class ExcludeRule(pydantic.BaseModel):
 
     user: str | None = None
     """The login of whoever posted the comment or review, committed the new
-    head, or changed the state, in any case."""
+    head, or changed the state, in any case. A checks conclusion has no login,
+    so it never matches."""
 
     text: re.Pattern[str] | None = None
     """A regular expression, searched for anywhere in a comment's or review's
     Markdown body, or a new head commit's message. A review with comments but
     no body, such as a lone reply on the diff, matches when every one of its
-    comments does. A state change has no text, so it never matches. Anchor it
-    with ``^``; set flags inline, such as ``(?i)``."""
+    comments does. A state change or checks conclusion has no text, so it never
+    matches. Anchor it with ``^``; set flags inline, such as ``(?i)``."""
 
     @pydantic.model_validator(mode='after')
     def _check_some_field_is_set(self) -> Self:
@@ -40,7 +41,7 @@ class ExcludeRule(pydantic.BaseModel):
                 bodies = [event.body]
             case _watch.HeadChanged():
                 bodies = [event.message]
-            case _watch.StateChanged():
+            case _watch.StateChanged() | _watch.ChecksConcluded():
                 bodies = []
             case _:
                 assert_never(event)
@@ -48,10 +49,11 @@ class ExcludeRule(pydantic.BaseModel):
             bool(bodies) and all(self.text.search(body) is not None for body in bodies)
         )
 
+    def _matches_user(self, event: _watch.GitHubEvent) -> bool:
+        login = event.user if not isinstance(event, _watch.ChecksConcluded) else None
+        return self.user is None or (
+            login is not None and login.casefold() == self.user.casefold()
+        )
+
     def matches(self, event: _watch.GitHubEvent) -> bool:
-        return (
-            self.user is None
-            or (
-                event.user is not None and event.user.casefold() == self.user.casefold()
-            )
-        ) and self._matches_text(event)
+        return self._matches_user(event) and self._matches_text(event)

@@ -30,10 +30,10 @@ fit together; the docstrings have the details.
 | Name | What it is |
 | --- | --- |
 | `GitHubClient(token)` | An async REST API client for one token, used as an async context manager. It retries transient failures, and asks again conditionally on each response's `ETag`. |
-| `watch(client, repo, pull, *, state, poll_interval=DEFAULT_POLL_INTERVAL)` | A source for one pull request's conversation comments, submitted reviews, pushes and state changes. |
+| `watch(client, repo, pull, *, state, poll_interval=DEFAULT_POLL_INTERVAL)` | A source for one pull request's conversation comments, submitted reviews, pushes, state changes and checks conclusions. |
 | `GitHubState` | A GitHub source's state: `after`, by GitHub's clock, the `seen` IDs of the events from then on already reported, and the last `head`. |
 | `CommentPosted`, `ReviewSubmitted` | The `github.comment_posted` and `github.review_submitted` events; a review carries its `ReviewComment`s. |
-| `HeadChanged`, `StateChanged` | The `github.head_changed` event, with the `before` and `after` SHAs, and the `github.state_changed` event, with a `StateName`. |
+| `HeadChanged`, `StateChanged`, `ChecksConcluded` | The `github.head_changed` event, with the `before` and `after` SHAs; the `github.state_changed` event, with a `StateName`; and the `github.checks_concluded` event, with a `Conclusion` and the `failed` and `pending` check names. |
 | `ExcludeRule` | A rule over `user` (a login) and a `text` regex over the body. |
 | `GitHubError` | Raised for an error response that retrying won't fix. |
 | `Repo` | A validated `OWNER/REPO` string. |

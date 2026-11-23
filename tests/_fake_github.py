@@ -1,3 +1,5 @@
+# pylint: disable=protected-access
+
 """An in-memory GitHub pull request, served through :class:`httpx.MockTransport`."""
 
 import email.utils
@@ -30,6 +32,15 @@ def at(second: int) -> datetime:
     )
 
 
+def _serve_conditionally(request: httpx.Request, content: bytes) -> httpx.Response:
+    etag = f'"{hashlib.sha1(content).hexdigest()}"'
+    if request.headers.get('If-None-Match') == etag:
+        response = httpx.Response(304, headers={'ETag': etag})
+    else:
+        response = httpx.Response(200, content=content, headers={'ETag': etag})
+    return response
+
+
 @dataclass
 class FakeGitHub:
     """One pull request's comments, reviews, head and issue events, answering
@@ -56,6 +67,15 @@ class FakeGitHub:
     """Each pushed commit, by SHA."""
 
     issue_events: list[_api.IssueEvent] = field(default_factory=list)
+
+    check_runs: dict[str, list[_api.CheckRun]] = field(default_factory=dict)
+    """Each commit's checks, by SHA."""
+
+    check_suites: dict[str, list[_api.CheckSuite]] = field(default_factory=dict)
+    """Each commit's check suites, by SHA."""
+
+    commit_statuses: dict[str, list[_api.Status]] = field(default_factory=dict)
+    """Each commit's statuses, by SHA."""
 
     requests: list[httpx.Request] = field(default_factory=list)
 
@@ -164,6 +184,55 @@ class FakeGitHub:
             ),
         )
 
+    def check(
+        self,
+        name: str,
+        conclusion: str | None = 'success',
+        *,
+        sha: str | None = None,
+    ) -> None:
+        """Sets a check on ``sha``, the head by default: completed with
+        ``conclusion``, or still running when it's ``None``."""
+        runs = self.check_runs.setdefault(sha or self.head, [])
+        runs[:] = [run for run in runs if run.name != name]
+        runs.append(
+            _api.CheckRun(
+                name=name,
+                status='completed' if conclusion is not None else 'in_progress',
+                conclusion=conclusion,
+            ),
+        )
+
+    def suite(
+        self,
+        status: str,
+        runs: int,
+        *,
+        created_at: datetime | None = None,
+    ) -> None:
+        """Adds a check suite to the head."""
+        self.check_suites.setdefault(self.head, []).append(
+            _api.CheckSuite(
+                status=status,
+                latest_check_runs_count=runs,
+                created_at=created_at or self.now,
+            ),
+        )
+
+    def _serve_checks(self, request: httpx.Request) -> httpx.Response:
+        """A commit's check runs, check suites or combined status."""
+        _, sha, kind = request.url.path.rsplit('/', 2)
+        document: pydantic.BaseModel
+        if kind == 'check-runs':
+            document = _api._CheckRunsPage(check_runs=self.check_runs.get(sha, []))
+        elif kind == 'check-suites':
+            document = _api._CheckSuitesPage(
+                check_suites=self.check_suites.get(sha, []),
+            )
+        else:
+            document = _api._CombinedStatus(statuses=self.commit_statuses.get(sha, []))
+        return _serve_conditionally(request, document.model_dump_json().encode())
+
     def _serve_head(self, request: httpx.Request) -> httpx.Response:
         """The head's SHA, which is also its ``ETag``, as GitHub serves it."""
         etag = f'"{self.head}"'
@@ -236,6 +305,8 @@ class FakeGitHub:
             response = self._serve_head(request)
         elif request.url.path == f'{_PREFIX}/commits':
             response = self._serve_commit(request)
+        elif request.url.path.endswith(('/check-runs', '/check-suites', '/status')):
+            response = self._serve_checks(request)
         elif request.url.path == '/rate_limit':
             response = httpx.Response(
                 200,

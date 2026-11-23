@@ -2,8 +2,10 @@
 
 import contextlib
 import httpx
+import pytest
 from . import _fake_github
 from botwatch import github
+from botwatch.github import _api
 from botwatch.github import _watch
 from collections.abc import Sequence
 from datetime import datetime
@@ -123,6 +125,76 @@ class Test_apply_poll:
 
         assert not update.events
         assert update.state == state.model_copy(update={'head': _HEAD})
+
+
+def _run(name: str, conclusion: str | None = 'success') -> _api.CheckRun:
+    return _api.CheckRun(
+        name=name,
+        status='completed' if conclusion is not None else 'in_progress',
+        conclusion=conclusion,
+    )
+
+
+def _suite(status: str, runs: int, *, age: timedelta = _NO_WAIT) -> _api.CheckSuite:
+    return _api.CheckSuite(
+        status=status,
+        latest_check_runs_count=runs,
+        created_at=at(100) - age,
+    )
+
+
+@pytest.mark.parametrize(
+    ('runs', 'suites', 'statuses', 'verdict'),
+    [
+        ([], [], [], None),
+        (
+            [_run('test'), _run('lint')],
+            [_suite('completed', 2)],
+            [],
+            ('success', (), ()),
+        ),
+        (
+            [_run('test', 'failure'), _run('lint', None)],
+            [_suite('in_progress', 2)],
+            [],
+            ('failure', ('test',), ('lint',)),
+        ),
+        (
+            [_run('test', 'cancelled'), _run('lint')],
+            [_suite('completed', 2)],
+            [],
+            ('cancelled', ('test',), ()),
+        ),
+        ([_run('test')], [_suite('in_progress', 1)], [], None),  # jobs to come
+        ([_run('test')], [_suite('queued', 0, age=timedelta(seconds=10))], [], None),
+        (
+            [_run('test')],
+            [_suite('queued', 0, age=timedelta(hours=1))],
+            [],
+            ('success', (), ()),
+        ),
+        (
+            [],
+            [],
+            [_api.Status(context='ci/legacy', state='error')],
+            ('failure', ('ci/legacy',), ()),
+        ),
+        ([_run('test')], [], [_api.Status(context='ci/legacy', state='pending')], None),
+    ],
+)
+def test_conclude(
+    runs: list[_api.CheckRun],
+    suites: list[_api.CheckSuite],
+    statuses: list[_api.Status],
+    verdict: tuple[str, tuple[str, ...], tuple[str, ...]] | None,
+) -> None:
+    result = _watch._conclude(runs, suites, statuses, now=at(100))
+
+    assert (
+        (result.conclusion, result.failed, result.pending)
+        if result is not None
+        else None
+    ) == verdict
 
 
 async def _poll_once(
@@ -294,7 +366,7 @@ class Test_watch:
             nonlocal clock_reads
             if request.url.path == '/rate_limit':
                 clock_reads += 1
-                if clock_reads == 3:
+                if clock_reads == 4:  # the start, then the third poll
                     fake.comment(4)
 
         fake.after_each = comment_on_the_third_poll
@@ -316,7 +388,9 @@ class Test_watch:
             for index, request in enumerate(fake.requests)
             if request.url.path == '/rate_limit'
         ]
-        assert fake.statuses[clock_indexes[1] + 1 : clock_indexes[2]] == [304] * 4
+        # The head, comments, reviews, issue events, check runs, check suites
+        # and statuses.
+        assert fake.statuses[clock_indexes[2] + 1 : clock_indexes[3]] == [304] * 7
 
     async def test__records_a_missing_head_as_it_starts(self) -> None:
         fake = _fake_github.FakeGitHub()
@@ -356,4 +430,53 @@ class Test_watch:
             ('converted_to_draft', 'maintainer'),
             ('ready_for_review', 'maintainer'),
             ('closed', 'maintainer'),
+        ]
+
+    async def test__records_the_conclusion_as_it_starts(self) -> None:
+        fake = _fake_github.FakeGitHub()
+        fake.check('test')
+
+        async with fake.create_client() as client:
+            source = github.watch(client, _REPO, _PULL, state=None)
+            async with contextlib.aclosing(source):
+                checkpoint = await anext(source)
+
+        assert checkpoint.state.checks == github.CheckResult(
+            head=_HEAD,
+            conclusion='success',
+        )
+
+    async def test__reports_a_conclusion_per_push_and_rerun(self) -> None:
+        fake = _fake_github.FakeGitHub(now=at(5))
+        fake.check('test', None)
+        conclusions: list[tuple[str, str, tuple[str, ...]]] = []
+
+        async with fake.create_client() as client:
+            source = github.watch(
+                client,
+                _REPO,
+                _PULL,
+                state=github.GitHubState(after=at(2), head=_HEAD),
+                poll_interval=_NO_WAIT,
+            )
+            async with contextlib.aclosing(source):
+                await anext(source)
+                for head, conclusion in [
+                    (_HEAD, 'failure'),
+                    (_HEAD, 'success'),  # re-run
+                    (_NEW_HEAD, 'success'),  # pushed
+                ]:
+                    if head != fake.head:
+                        fake.push(head)
+                    fake.check('test', conclusion)
+                    conclusions.extend(
+                        (event.head, event.conclusion, event.failed)
+                        for event in (await anext(source)).events
+                        if isinstance(event, github.ChecksConcluded)
+                    )
+
+        assert conclusions == [
+            (_HEAD, 'failure', ('test',)),
+            (_HEAD, 'success', ()),
+            (_NEW_HEAD, 'success', ()),
         ]

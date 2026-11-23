@@ -7,6 +7,7 @@ from .. import _source
 from .. import _utils
 from . import _api
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -46,6 +47,19 @@ type Time = Annotated[
 """A time by GitHub's clock, in UTC, written in RFC 3339."""
 
 
+type Conclusion = Literal['success', 'failure', 'cancelled']
+
+
+class CheckResult(pydantic.BaseModel):
+    """A head commit's checks conclusion."""
+
+    model_config = pydantic.ConfigDict(extra='forbid', frozen=True)
+
+    head: str
+
+    conclusion: Conclusion
+
+
 class GitHubState(pydantic.BaseModel):
     """How far a GitHub source has got: a time, and the events from then on
     already reported.
@@ -73,6 +87,14 @@ class GitHubState(pydantic.BaseModel):
     head_changes: int = 0
     """How many head changes the source has reported, which numbers each one
     so that no ID repeats, even when the head returns to an earlier commit."""
+
+    checks: CheckResult | None = None
+    """The checks' last conclusion, reported or recorded as the source started,
+    and the head it was for."""
+
+    checks_reports: int = 0
+    """How many checks conclusions the source has reported, which numbers each
+    one so that no ID repeats."""
 
     def describe(self) -> str:
         """Where the source is up to, for people."""
@@ -211,7 +233,100 @@ class StateChanged(_source.Event):
     """The pull request on github.com."""
 
 
-type GitHubEvent = CommentPosted | ReviewSubmitted | HeadChanged | StateChanged
+class ChecksConcluded(_source.Event):
+    """The head commit's checks reached a conclusion: one failed, or all
+    finished. Reported once per conclusion per head, so a re-run that turns
+    failure into success is reported too."""
+
+    type: Literal['github.checks_concluded'] = 'github.checks_concluded'
+
+    repo: Repo
+
+    pull: int
+
+    head: str
+    """The SHA of the head commit the checks ran on."""
+
+    conclusion: Conclusion
+    """``failure`` as soon as one check fails; otherwise, once all have
+    finished, ``cancelled`` if one was cancelled, else ``success``."""
+
+    failed: tuple[str, ...]
+    """The names of the checks and statuses that failed or were cancelled."""
+
+    pending: tuple[str, ...]
+    """The names of the checks and statuses still running, when a failure is
+    reported before they finish."""
+
+    url: str
+    """The pull request's checks on github.com."""
+
+
+type GitHubEvent = (
+    CommentPosted | ReviewSubmitted | HeadChanged | StateChanged | ChecksConcluded
+)
+
+_FAILED_CONCLUSIONS = frozenset({'failure', 'timed_out', 'action_required'})
+
+_FAILED_STATES = frozenset({'failure', 'error'})
+
+_EMPTY_SUITE_GRACE = timedelta(minutes=1)
+"""How long a check suite with no checks yet may still be about to start some.
+An app can create a suite that never runs any, and it stays queued for good."""
+
+
+@dataclass(frozen=True)
+class _Verdict:
+    conclusion: Conclusion
+    failed: tuple[str, ...]
+    pending: tuple[str, ...]
+
+
+def _conclude(
+    runs: Sequence[_api.CheckRun],
+    suites: Sequence[_api.CheckSuite],
+    statuses: Sequence[_api.Status],
+    *,
+    now: datetime,
+) -> _Verdict | None:
+    """The checks' conclusion, or ``None`` while it isn't known yet: while
+    they are still running without a failure, or when there are none.
+
+    A check suite still running means more checks may come, such as jobs that
+    wait for others, so the checks haven't finished even when every check
+    created so far has.
+    """
+    failures = {
+        run.name
+        for run in runs
+        if run.status == 'completed' and run.conclusion in _FAILED_CONCLUSIONS
+    } | {status.context for status in statuses if status.state in _FAILED_STATES}
+    cancellations = {run.name for run in runs if run.conclusion == 'cancelled'}
+    pending = tuple(
+        sorted(
+            {run.name for run in runs if run.status != 'completed'}
+            | {status.context for status in statuses if status.state == 'pending'},
+        ),
+    )
+    running = bool(pending) or any(
+        suite.status != 'completed'
+        and (
+            suite.latest_check_runs_count > 0
+            or now - suite.created_at < _EMPTY_SUITE_GRACE
+        )
+        for suite in suites
+    )
+    failed = tuple(sorted(failures | cancellations))
+    verdict: _Verdict | None
+    if failures:
+        verdict = _Verdict('failure', failed, pending)
+    elif running or not (runs or statuses):
+        verdict = None
+    elif cancellations:
+        verdict = _Verdict('cancelled', failed, ())
+    else:
+        verdict = _Verdict('success', (), ())
+    return verdict
 
 
 def _apply_poll(
@@ -220,14 +335,19 @@ def _apply_poll(
     *,
     settled_before: datetime,
     head: str,
-    head_changed: HeadChanged | None = None,
+    checks: CheckResult | None = None,
+    found: Sequence[HeadChanged | ChecksConcluded] = (),
 ) -> _source.Update[GitHubState, GitHubEvent]:
-    """Folds one poll's events into the state: those not yet reported, and any
-    change of head, oldest first, and the state after them.
+    """Folds one poll's events into the state: those not yet reported, and
+    ``found``, oldest first, and the state after them.
+
+    ``found`` are events found by comparing with ``state`` rather than placed
+    by time, such as a change of head, and are always reported.
 
     The state moves on to the newest event reported, but no further than
     ``settled_before``, before which every event is visible. It remembers
-    every event reported from there on, and ``head``.
+    every event reported from there on, ``head``, and ``checks`` unless it's
+    ``None``.
     """
     new_events = sorted(
         (
@@ -246,7 +366,7 @@ def _apply_poll(
     return _source.Update(
         events=tuple(
             sorted(
-                [*new_events, *([head_changed] if head_changed is not None else [])],
+                [*new_events, *found],
                 key=lambda event: (event.time, event.id),
             ),
         ),
@@ -254,7 +374,11 @@ def _apply_poll(
             after=after,
             seen={id_: time for id_, time in reported.items() if time >= after},
             head=head,
-            head_changes=state.head_changes + (head_changed is not None),
+            head_changes=state.head_changes
+            + sum(isinstance(event, HeadChanged) for event in found),
+            checks=checks if checks is not None else state.checks,
+            checks_reports=state.checks_reports
+            + sum(isinstance(event, ChecksConcluded) for event in found),
         ),
     )
 
@@ -409,6 +533,20 @@ async def _fetch_events(
     ]
 
 
+async def _fetch_verdict(
+    client: _api.GitHubClient,
+    repo: str,
+    head: str,
+    now: datetime,
+) -> _Verdict | None:
+    return _conclude(
+        await client.fetch_check_runs(repo, head),
+        await client.fetch_check_suites(repo, head),
+        await client.fetch_statuses(repo, head),
+        now=now,
+    )
+
+
 async def watch(
     client: _api.GitHubClient,
     repo: str,
@@ -417,20 +555,37 @@ async def watch(
     state: GitHubState | None,
     poll_interval: timedelta = DEFAULT_POLL_INTERVAL,
 ) -> _source.Source[GitHubState, GitHubEvent]:
-    """Watches a pull request's comments, reviews, head and state, forever.
+    """Watches a pull request's comments, reviews, head, state and checks,
+    forever.
 
     Starts from ``state``, or when it's ``None`` from now by GitHub's clock,
-    taking the pull request's current head when the state has none, and first
-    yields that starting state as a checkpoint. Then it polls every
+    taking the pull request's current head and checks conclusion when the
+    state has none, and first yields that starting state as a checkpoint. Then it polls every
     ``poll_interval`` and yields an update for each poll that finds new events.
     """
     current = (
         state if state is not None else GitHubState(after=await client.fetch_time())
     )
-    if current.head is None:
-        current = current.model_copy(
-            update={'head': await client.fetch_head(repo, pull)},
+    head = (
+        current.head
+        if current.head is not None
+        else await client.fetch_head(
+            repo,
+            pull,
         )
+    )
+    if current.checks is None:
+        verdict = await _fetch_verdict(client, repo, head, await client.fetch_time())
+        current = current.model_copy(
+            update={
+                'checks': (
+                    CheckResult(head=head, conclusion=verdict.conclusion)
+                    if verdict is not None
+                    else None
+                ),
+            },
+        )
+    current = current.model_copy(update={'head': head})
     yield _source.Update(events=(), state=current)
 
     url = f'https://github.com/{repo}/pull/{pull}'
@@ -451,12 +606,36 @@ async def watch(
             if current.head is not None and current.head != head
             else None
         )
+        verdict = await _fetch_verdict(client, repo, head, started_at)
+        checks = (
+            CheckResult(head=head, conclusion=verdict.conclusion)
+            if verdict is not None
+            else None
+        )
+        checks_concluded = (
+            ChecksConcluded(
+                id=f'checks-{current.checks_reports + 1}-{head}',
+                time=started_at,
+                repo=repo,
+                pull=pull,
+                head=head,
+                conclusion=verdict.conclusion,
+                failed=verdict.failed,
+                pending=verdict.pending,
+                url=f'{url}/checks',
+            )
+            if verdict is not None and checks != current.checks
+            else None
+        )
         update = _apply_poll(
             current,
             events,
             settled_before=started_at - _SETTLE_TIME,
             head=head,
-            head_changed=head_changed,
+            checks=checks,
+            found=[
+                event for event in (head_changed, checks_concluded) if event is not None
+            ],
         )
         if update.events:
             yield update
