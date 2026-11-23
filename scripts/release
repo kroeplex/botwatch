@@ -135,14 +135,15 @@ _check_branch() {
   branch="$(git symbolic-ref --short HEAD)" \
     || base::abort "Failed to determine current branch name; aborting."
   local default_branch
-  default_branch="$(git symbolic-ref --short refs/remotes/origin/HEAD)" \
+  default_branch="$(git symbolic-ref --short refs/remotes/origin/HEAD 2> /dev/null)" \
+    || ((_arg__ignore_branch == 1)) \
     || base::abort 'Failed to determine the default branch; try `git remote set-head origin --auto`.'
   default_branch="${default_branch#origin/}"
 
   if [[ "${branch}" == "${default_branch}" ]]; then
     :
   elif ((_arg__ignore_branch == 1)); then
-    base::log_warning "Not on ${default_branch} branch; current branch: ${branch}"
+    base::log_warning "Not on ${default_branch:-the default} branch; current branch: ${branch}"
   else
     base::log_error "Must be on ${default_branch} branch, or specify \`-B\` or \`--ignore-branch\`."
     exit 1
