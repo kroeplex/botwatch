@@ -166,11 +166,14 @@ conversation doesn't include thread replies.
   - `github.checks_concluded` when the head's checks reach a conclusion other
     than the last one reported for that head: `failure` as soon as a check run
     or commit status fails, and otherwise, once all have finished,
-    `cancelled` or `success`. A check suite still running holds back a
-    success, since jobs that wait on others have no check run yet; a suite
-    with no runs counts only for its first minute, as some apps create suites
-    that never run. A re-run that turns a failure into a success is reported
-    too.
+    `cancelled` or `success`. Only each check's newest run counts, as a
+    workflow can run again for the same commit. A check suite not yet
+    completed holds back a success, since jobs that wait on others, or a
+    workflow waiting on its concurrency group, have no check run yet; a queued
+    suite with no runs counts only for its first minute, as some apps create
+    suites that never run. A completed suite with no runs counts as failed if
+    it failed to start, and as running while it awaits approval. A re-run that
+    turns a failure into a success is reported too.
 - **State.** The state is a time, `after`, by GitHub's clock, plus `seen`, the
   IDs of the events from then on already reported, and `head`, the head commit
   when last polled, with `head_changes`, a count that numbers each head change

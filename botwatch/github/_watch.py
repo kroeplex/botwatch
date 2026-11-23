@@ -51,13 +51,14 @@ type Conclusion = Literal['success', 'failure', 'cancelled']
 
 
 class CheckResult(pydantic.BaseModel):
-    """A head commit's checks conclusion."""
+    """A head commit's checks conclusion, as last seen."""
 
     model_config = pydantic.ConfigDict(extra='forbid', frozen=True)
 
     head: str
 
-    conclusion: Conclusion
+    conclusion: Conclusion | None
+    """``None`` while the checks have no conclusion yet."""
 
 
 class GitHubState(pydantic.BaseModel):
@@ -89,8 +90,8 @@ class GitHubState(pydantic.BaseModel):
     so that no ID repeats, even when the head returns to an earlier commit."""
 
     checks: CheckResult | None = None
-    """The checks' last conclusion, reported or recorded as the source started,
-    and the head it was for."""
+    """The checks' conclusion when last polled, or ``None`` until the source
+    records it as it starts, which reports nothing."""
 
     checks_reports: int = 0
     """How many checks conclusions the source has reported, which numbers each
@@ -234,9 +235,9 @@ class StateChanged(_source.Event):
 
 
 class ChecksConcluded(_source.Event):
-    """The head commit's checks reached a conclusion: one failed, or all
-    finished. Reported once per conclusion per head, so a re-run that turns
-    failure into success is reported too."""
+    """The head commit's checks reached a conclusion other than the last one
+    seen for that head: one failed, or all finished. A re-run that turns a
+    failure into a success is reported too."""
 
     type: Literal['github.checks_concluded'] = 'github.checks_concluded'
 
@@ -268,11 +269,16 @@ type GitHubEvent = (
 
 _FAILED_CONCLUSIONS = frozenset({'failure', 'timed_out', 'action_required'})
 
+_FAILED_SUITE_CONCLUSIONS = frozenset({'failure', 'timed_out', 'startup_failure'})
+"""The conclusions of a check suite that failed before running any checks, such
+as a workflow whose file is broken."""
+
 _FAILED_STATES = frozenset({'failure', 'error'})
 
 _EMPTY_SUITE_GRACE = timedelta(minutes=1)
-"""How long a check suite with no checks yet may still be about to start some.
-An app can create a suite that never runs any, and it stays queued for good."""
+"""How long a queued check suite with no checks may still be about to start
+some. An app can create a suite that never runs any, and it stays queued for
+good."""
 
 
 @dataclass(frozen=True)
@@ -280,6 +286,21 @@ class _Verdict:
     conclusion: Conclusion
     failed: tuple[str, ...]
     pending: tuple[str, ...]
+
+
+def _is_running(suite: _api.CheckSuite, now: datetime) -> bool:
+    """Whether a check suite may yet add checks or results: any suite not
+    completed, unless it has sat queued with no checks past its grace, and a
+    completed one with no checks awaiting approval to run."""
+    if suite.status == 'completed':
+        running = (
+            suite.conclusion == 'action_required' and suite.latest_check_runs_count == 0
+        )
+    elif suite.status == 'queued' and suite.latest_check_runs_count == 0:
+        running = now - suite.created_at < _EMPTY_SUITE_GRACE
+    else:
+        running = True
+    return running
 
 
 def _conclude(
@@ -292,30 +313,36 @@ def _conclude(
     """The checks' conclusion, or ``None`` while it isn't known yet: while
     they are still running without a failure, or when there are none.
 
-    A check suite still running means more checks may come, such as jobs that
-    wait for others, so the checks haven't finished even when every check
-    created so far has.
+    Only each check's newest run counts, as a workflow can run again for the
+    same commit. A check suite still running means more checks may come, such
+    as jobs that wait for others, so the checks haven't finished even when
+    every check created so far has.
     """
-    failures = {
-        run.name
-        for run in runs
-        if run.status == 'completed' and run.conclusion in _FAILED_CONCLUSIONS
-    } | {status.context for status in statuses if status.state in _FAILED_STATES}
-    cancellations = {run.name for run in runs if run.conclusion == 'cancelled'}
+    latest = {run.name: run for run in sorted(runs, key=lambda run: run.id)}
+    failures = (
+        {
+            run.name
+            for run in latest.values()
+            if run.status == 'completed' and run.conclusion in _FAILED_CONCLUSIONS
+        }
+        | {status.context for status in statuses if status.state in _FAILED_STATES}
+        | {
+            suite.app.name if suite.app is not None else 'check suite'
+            for suite in suites
+            if suite.latest_check_runs_count == 0
+            and suite.conclusion in _FAILED_SUITE_CONCLUSIONS
+        }
+    )
+    cancellations = {
+        run.name for run in latest.values() if run.conclusion == 'cancelled'
+    }
     pending = tuple(
         sorted(
-            {run.name for run in runs if run.status != 'completed'}
+            {run.name for run in latest.values() if run.status != 'completed'}
             | {status.context for status in statuses if status.state == 'pending'},
         ),
     )
-    running = bool(pending) or any(
-        suite.status != 'completed'
-        and (
-            suite.latest_check_runs_count > 0
-            or now - suite.created_at < _EMPTY_SUITE_GRACE
-        )
-        for suite in suites
-    )
+    running = bool(pending) or any(_is_running(suite, now) for suite in suites)
     failed = tuple(sorted(failures | cancellations))
     verdict: _Verdict | None
     if failures:
@@ -533,17 +560,22 @@ async def _fetch_events(
     ]
 
 
-async def _fetch_verdict(
+async def _fetch_checks(
     client: _api.GitHubClient,
     repo: str,
     head: str,
     now: datetime,
-) -> _Verdict | None:
-    return _conclude(
+) -> tuple[_Verdict | None, CheckResult]:
+    """The head's checks verdict, and the result to record for it."""
+    verdict = _conclude(
         await client.fetch_check_runs(repo, head),
         await client.fetch_check_suites(repo, head),
         await client.fetch_statuses(repo, head),
         now=now,
+    )
+    return verdict, CheckResult(
+        head=head,
+        conclusion=verdict.conclusion if verdict is not None else None,
     )
 
 
@@ -560,8 +592,9 @@ async def watch(
 
     Starts from ``state``, or when it's ``None`` from now by GitHub's clock,
     taking the pull request's current head and checks conclusion when the
-    state has none, and first yields that starting state as a checkpoint. Then it polls every
-    ``poll_interval`` and yields an update for each poll that finds new events.
+    state has none, and first yields that starting state as a checkpoint.
+    Then it polls every ``poll_interval`` and yields an update for each poll
+    that finds new events.
     """
     current = (
         state if state is not None else GitHubState(after=await client.fetch_time())
@@ -569,22 +602,11 @@ async def watch(
     head = (
         current.head
         if current.head is not None
-        else await client.fetch_head(
-            repo,
-            pull,
-        )
+        else await client.fetch_head(repo, pull)
     )
     if current.checks is None:
-        verdict = await _fetch_verdict(client, repo, head, await client.fetch_time())
-        current = current.model_copy(
-            update={
-                'checks': (
-                    CheckResult(head=head, conclusion=verdict.conclusion)
-                    if verdict is not None
-                    else None
-                ),
-            },
-        )
+        _, checks = await _fetch_checks(client, repo, head, await client.fetch_time())
+        current = current.model_copy(update={'checks': checks})
     current = current.model_copy(update={'head': head})
     yield _source.Update(events=(), state=current)
 
@@ -606,15 +628,13 @@ async def watch(
             if current.head is not None and current.head != head
             else None
         )
-        verdict = await _fetch_verdict(client, repo, head, started_at)
-        checks = (
-            CheckResult(head=head, conclusion=verdict.conclusion)
-            if verdict is not None
-            else None
-        )
+        verdict, checks = await _fetch_checks(client, repo, head, started_at)
         checks_concluded = (
             ChecksConcluded(
-                id=f'checks-{current.checks_reports + 1}-{head}',
+                id=(
+                    f'checks-{current.checks_reports + 1}-{head}'
+                    f'-{verdict.conclusion}'
+                ),
                 time=started_at,
                 repo=repo,
                 pull=pull,

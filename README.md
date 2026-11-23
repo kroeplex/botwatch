@@ -82,7 +82,8 @@ each kind of conversation you watch: `channels:history`, `groups:history`,
 has been added to.
 
 For GitHub, set `GITHUB_TOKEN` to a token that can read the repositories'
-pull requests, such as a fine-grained token with read access to pull requests.
+pull requests and their checks: a fine-grained token or GitHub App needs read
+access to pull requests, checks and commit statuses.
 
 ## Using it from an agent
 
@@ -207,13 +208,13 @@ Each event is one JSON line, flushed as it's written:
 
 Each event type then carries its own fields: for Slack, `conversation`, `ts`,
 `thread_ts`, `user`, `bot_id`, `username`, `subtype` and `text`; for GitHub,
-`repo`, `pull`, `user` and `url`, plus a comment's or review's `body`, a
-review's `state` and `comments` (each with its `path` and `line`), a head
-change's `before` and `after` SHAs and new head commit's `message` (its
-`user` is the committer), a state change's `state` (`merged`, `closed`,
-`reopened`, `ready_for_review` or `converted_to_draft`), and a checks
-conclusion's `head`, `conclusion` (`success`, `failure` or `cancelled`),
-`failed` and `pending` check names; for
+`repo`, `pull` and `url`, and `user` on all but a checks conclusion; plus a
+comment's or review's `body`, a review's `state` and `comments` (each with its
+`path` and `line`), a head change's `before` and `after` SHAs and new head
+commit's `message` (its `user` is the committer), a state change's `state`
+(`merged`, `closed`, `reopened`, `ready_for_review` or `converted_to_draft`),
+and a checks conclusion's `head`, `conclusion` (`success`, `failure` or
+`cancelled`), and `failed` and `pending` check names; for
 `botwatch.source_failed`, `error`, what the source raised. Diagnostics go to
 stderr. The exit status is 0 after a normal run, and 2 for a bad config, state
 file or environment.

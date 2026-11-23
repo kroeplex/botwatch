@@ -414,6 +414,7 @@ async def test_run_once__writes_github_events() -> None:
         after=_fake_github.at(4),
         seen={records[1]['event']['id']: _fake_github.at(4)},
         head=fake_github.head,
+        checks=github.CheckResult(head=fake_github.head, conclusion=None),
     )
 
 
