@@ -209,7 +209,8 @@ async def test_run_once__where_a_run_ends_never_changes_what_is_emitted(
     linger: timedelta,
     crash_after: timedelta | None,
 ) -> None:
-    """The design spec in ``botwatch._run``."""
+    """The design spec "Where a run ends never changes what is emitted", in
+    ``docs/design.md``."""
     records = await _watch_in_runs(linger, crash_after)
 
     first_seen = list(dict.fromkeys(records))
