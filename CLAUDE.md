@@ -14,10 +14,10 @@ conflict.
 
 `botwatch` is a **one-shot `select` over many event sources**, meant to be
 executed by an agent that needs to react to the outside world without doing its
-own cursor bookkeeping. It loads a config of sources plus an optional state file, blocks
-until events arrive or a timeout elapses, emits the new events on stdout,
-advances the state, and exits. See the [README](README.md) for the shape of it
-and the design proposal, [0015](docs/issues/0015.md).
+own cursor bookkeeping. It loads a config of sources plus an optional state
+file, blocks until events arrive or a timeout elapses, emits the new events on
+stdout, advances the state, and exits. See the [README](README.md) for the shape
+of it and the design proposal, [0015](docs/issues/0015.md).
 
 The repo is currently **design-stage**: no implementation yet.
 
