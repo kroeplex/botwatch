@@ -53,12 +53,14 @@ async def _play(
 
 
 def _read_outcome(task: asyncio.Task[_Update]) -> _Outcome:
-    exception = None if task.cancelled() else task.exception()
-    return (
-        'cancelled'
-        if task.cancelled()
-        else task.result() if exception is None else exception
-    )
+    outcome: _Outcome
+    if task.cancelled():
+        outcome = 'cancelled'
+    elif (exception := task.exception()) is not None:
+        outcome = exception
+    else:
+        outcome = task.result()
+    return outcome
 
 
 async def _run(
@@ -122,7 +124,7 @@ class Test_select:
         )
 
         assert received[0][0] == 'a'
-        assert elapsed < _QUIET.total_seconds()
+        assert elapsed < _LINGER.total_seconds()
         assert sorted(closed) == ['a', 'b']
 
     async def test__failures_never_open_the_window(self) -> None:
