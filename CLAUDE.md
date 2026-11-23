@@ -19,7 +19,7 @@ file, blocks until events arrive or a timeout elapses, emits the new events on
 stdout, advances the state, and exits. See the [README](README.md) for the shape
 of it and the design proposal, [0015](docs/issues/0015.md).
 
-The repo is currently **design-stage**: no implementation yet.
+Implementation is under way, following 0015's rollout.
 
 ## Repo-specific notes
 

@@ -5,4 +5,14 @@ recording how far it got last time, blocks until something happens, writes any
 new events to stdout, writes the advanced state back, and exits.
 """
 
+from ._source import Event
+from ._source import Source
+from ._source import Update
+
+__all__ = [
+    'Event',
+    'Source',
+    'Update',
+]
+
 __version__ = '0.1.0'

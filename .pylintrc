@@ -25,6 +25,10 @@ ignore-long-lines=^\s*(# )?<?https?://\S+>?$
 # Single-letter names sanctioned by the style guide (loop index, comprehension
 # element/key/value, and the throwaway underscore):
 good-names=i,x,k,v,_
+# Test names mirror the symbol under test, `__` standing in for `.` (PBP 7.1),
+# e.g. `Test_SlackClient__fetch_history` and `test_SlackTs__rejects_malformed`:
+class-rgx=^(_?[A-Z][a-zA-Z0-9]*|Test_[A-Za-z0-9_]+)$
+function-rgx=^(_?[a-z][a-z0-9_]*|test_[A-Za-z0-9_]+)$
 check-quote-consistency=yes
 
 [DESIGN]
