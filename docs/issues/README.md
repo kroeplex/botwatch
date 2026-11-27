@@ -7,7 +7,7 @@ Conventions and how to write a good issue: **[the shared issue tracker guide](ht
 
 | # | Title | Kind | Status |
 |---|---|---|---|
-| [0017](0017.md) | (reserved) Acknowledge delivery, and keep printed events until it is acknowledged | RFC | Open |
+| [0017](0017.md) | Acknowledge delivery, and keep printed events until it is acknowledged | RFC | Open |
 | [0016](0016.md) | (reserved) Retire sources that have gone quiet, with a heads-up one run ahead | Enhancement | Open |
 | [0015](0015.md) | Watch many sources in one blocking run, each carrying its own state | Enhancement | Resolved |
 | [0013](0013.md) | Resync the vendored boilerplate before this repo is published | Bug | In progress |
